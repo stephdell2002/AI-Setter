@@ -13,6 +13,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const message = String(body?.message ?? "").trim();
     let leadId: string | null = body?.leadId ? String(body.leadId) : null;
+    const slug = body?.slug ? String(body.slug).trim() : null;
 
     if (!message) {
       return NextResponse.json({ error: "Message is empty." }, { status: 400 });
@@ -28,20 +29,23 @@ export async function POST(req: Request) {
 
     const supabase = getSupabaseAdmin();
 
-    // 1. Load the active setter config (the live training from the database).
-    const { data: client, error: clientError } = await supabase
+    // 1. Load the setter config (the live training from the database). Each
+    // sellable setter has its own `slug`; the chat UI sends it so we load that
+    // specific setter. With no slug we fall back to the oldest active setter.
+    const base = supabase
       .from("clients")
       .select("id, system_prompt, active_rules, voice_samples, business_context")
-      .eq("is_active", true)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .eq("is_active", true);
+
+    const { data: client, error: clientError } = slug
+      ? await base.eq("slug", slug).maybeSingle()
+      : await base.order("created_at", { ascending: true }).limit(1).maybeSingle();
 
     if (clientError) throw clientError;
     if (!client) {
       return NextResponse.json(
-        { error: "No active setter found in the database." },
-        { status: 500 }
+        { error: "Setter not found." },
+        { status: 404 }
       );
     }
 
