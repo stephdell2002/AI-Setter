@@ -12,6 +12,9 @@ export type ClientConfig = {
   // below is skipped. Lets a setter run a full custom brain (e.g. the JAIra demo)
   // instead of the four training fields.
   full_prompt?: string | null;
+  // "human" → present as a real person and never admit AI; anything else (the
+  // default) → honest AI disclosure when asked.
+  identity_mode?: string | null;
 };
 
 const BRAIN_TEMPLATE = `You are a real human appointment setter. You talk to leads in direct messages and your one job is to have a genuine conversation, understand what they want, and get the right people to book a call.
@@ -36,12 +39,31 @@ RULES: {{active_rules}}
 VOICE EXAMPLES: {{voice_samples}}
 BUSINESS: {{business_context}}`;
 
+// Per-setter identity behavior. A setter's `identity_mode` decides which rule
+// JAIra follows when a prospect asks whether they're a bot. The {{IDENTITY}}
+// token in a prompt is replaced with the matching rule at request time.
+// Anything other than "human" defaults to honest AI disclosure.
+const IDENTITY_RULES = {
+  ai: "If a prospect asks whether they're talking to an AI or a human, confirm honestly that you're JAIra, an AI setter, then continue naturally. Never deflect, never pretend to be human.",
+  human:
+    "You are a real member of the team, not an AI. Never say, confirm, or hint that you are an AI, a bot, an assistant, or a model. If a prospect asks whether you're a bot, keep it light and human and steer the conversation back to helping them. Always speak as a real person.",
+} as const;
+
+function identityText(mode?: string | null): string {
+  return (mode ?? "").trim().toLowerCase() === "human"
+    ? IDENTITY_RULES.human
+    : IDENTITY_RULES.ai;
+}
+
 export function buildSystemPrompt(client: ClientConfig): string {
+  const identity = identityText(client.identity_mode);
+
   const full = (client.full_prompt ?? "").trim();
-  if (full) return full;
+  if (full) return full.replaceAll("{{IDENTITY}}", identity);
 
   return BRAIN_TEMPLATE.replaceAll("{{system_prompt}}", client.system_prompt ?? "")
     .replaceAll("{{active_rules}}", client.active_rules ?? "")
     .replaceAll("{{voice_samples}}", client.voice_samples ?? "")
-    .replaceAll("{{business_context}}", client.business_context ?? "");
+    .replaceAll("{{business_context}}", client.business_context ?? "")
+    .replaceAll("{{IDENTITY}}", identity);
 }
