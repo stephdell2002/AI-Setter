@@ -5,11 +5,13 @@ import Chat from "../Chat";
 
 export const dynamic = "force-dynamic";
 
+type Mode = "inbound" | "outbound" | "auto";
+
 async function loadSetter(slug: string) {
   const supabase = getSupabaseAdmin();
   const { data } = await supabase
     .from("clients")
-    .select("name, outbound")
+    .select("name, outbound, opening_mode")
     .eq("slug", slug)
     .eq("is_active", true)
     .maybeSingle();
@@ -37,13 +39,23 @@ export default async function SetterPage({
   const setter = await loadSetter(slug);
   if (!setter) notFound();
 
-  // Outbound (JAIra opens first) comes from the setter's flag, with an optional
-  // ?outbound=1 / ?outbound=0 override that's handy for demoing both modes on a call.
+  // How the conversation opens: the setter's opening_mode ('inbound' | 'outbound'
+  // | 'auto'), falling back to the older outbound flag. ?mode= and ?outbound=
+  // overrides are handy for demoing each behavior on a call.
   const sp = await searchParams;
-  const override = Array.isArray(sp.outbound) ? sp.outbound[0] : sp.outbound;
-  let outbound = !!setter.outbound;
-  if (override === "1" || override === "true") outbound = true;
-  if (override === "0" || override === "false") outbound = false;
+  const q = Array.isArray(sp.mode) ? sp.mode[0] : sp.mode;
+  const ob = Array.isArray(sp.outbound) ? sp.outbound[0] : sp.outbound;
 
-  return <Chat slug={slug} name={setter.name ?? "Setter"} outbound={outbound} />;
+  let mode: Mode =
+    setter.opening_mode === "outbound" || setter.opening_mode === "auto"
+      ? setter.opening_mode
+      : setter.outbound
+        ? "outbound"
+        : "inbound";
+
+  if (q === "inbound" || q === "outbound" || q === "auto") mode = q;
+  if (ob === "1" || ob === "true") mode = "outbound";
+  if (ob === "0" || ob === "false") mode = "inbound";
+
+  return <Chat slug={slug} name={setter.name ?? "Setter"} mode={mode} />;
 }
