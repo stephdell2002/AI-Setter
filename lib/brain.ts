@@ -8,6 +8,10 @@ export type ClientConfig = {
   active_rules: string | null;
   voice_samples: string | null;
   business_context: string | null;
+  // When set, this is used verbatim as the entire system prompt and the template
+  // below is skipped. Lets a setter run a full custom brain (e.g. the JAIra demo)
+  // instead of the four training fields.
+  full_prompt?: string | null;
 };
 
 const BRAIN_TEMPLATE = `You are a real human appointment setter. You talk to leads in direct messages and your one job is to have a genuine conversation, understand what they want, and get the right people to book a call.
@@ -33,6 +37,9 @@ VOICE EXAMPLES: {{voice_samples}}
 BUSINESS: {{business_context}}`;
 
 export function buildSystemPrompt(client: ClientConfig): string {
+  const full = (client.full_prompt ?? "").trim();
+  if (full) return full;
+
   return BRAIN_TEMPLATE.replaceAll("{{system_prompt}}", client.system_prompt ?? "")
     .replaceAll("{{active_rules}}", client.active_rules ?? "")
     .replaceAll("{{voice_samples}}", client.voice_samples ?? "")
