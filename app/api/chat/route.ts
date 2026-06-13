@@ -8,14 +8,22 @@ export const runtime = "nodejs";
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 500;
 
+// Sent as a synthetic opening user turn when a setter runs in cold-outbound mode
+// (JAIra messages first). It is never stored; it elicits the opener and, on later
+// turns, keeps the message list valid (the API requires it to start with a user turn).
+const OUTBOUND_TRIGGER =
+  "[You are starting a cold outbound conversation. This prospect has not messaged yet, you are reaching out first. Send only your opening message: short, warm, human, and curiosity sparking, ending with one easy question that invites a reply. Follow your tone rules. Do not pitch or mention booking yet.]";
+
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const message = String(body?.message ?? "").trim();
     let leadId: string | null = body?.leadId ? String(body.leadId) : null;
     const slug = body?.slug ? String(body.slug).trim() : null;
+    // Cold-outbound kickoff: JAIra opens the conversation with no user message.
+    const initiate = body?.initiate === true;
 
-    if (!message) {
+    if (!initiate && !message) {
       return NextResponse.json({ error: "Message is empty." }, { status: 400 });
     }
 
@@ -60,14 +68,16 @@ export async function POST(req: Request) {
       leadId = lead.id as string;
     }
 
-    // 3. Save the incoming user message.
-    const { error: insertUserError } = await supabase.from("messages").insert({
-      lead_id: leadId,
-      client_id: client.id,
-      role: "user",
-      content: message,
-    });
-    if (insertUserError) throw insertUserError;
+    // 3. Save the incoming user message (none on an outbound kickoff).
+    if (!initiate) {
+      const { error: insertUserError } = await supabase.from("messages").insert({
+        lead_id: leadId,
+        client_id: client.id,
+        role: "user",
+        content: message,
+      });
+      if (insertUserError) throw insertUserError;
+    }
 
     // 4. Load the whole conversation so the setter remembers the chat.
     const { data: history, error: historyError } = await supabase
@@ -81,6 +91,14 @@ export async function POST(req: Request) {
       role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
       content: String(m.content ?? ""),
     }));
+
+    // The Anthropic API requires the first turn to be from the user. On an outbound
+    // kickoff there is no history; on later turns of an outbound-started chat the
+    // stored history begins with JAIra's opener, so prepend the (unstored) trigger
+    // to keep the sequence valid and give the model context for why it opened.
+    if (initiate || claudeMessages[0]?.role === "assistant") {
+      claudeMessages.unshift({ role: "user" as const, content: OUTBOUND_TRIGGER });
+    }
 
     // 5. Build brain + live training and call Claude (server-side only).
     const system = buildSystemPrompt(client);
