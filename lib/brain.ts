@@ -44,7 +44,7 @@ BUSINESS: {{business_context}}`;
 // token in a prompt is replaced with the matching rule at request time.
 // Anything other than "human" defaults to honest AI disclosure.
 const IDENTITY_RULES = {
-  ai: "If a prospect asks whether they're talking to an AI or a human, confirm honestly that you're JAIra, an AI setter, then continue naturally. Never deflect, never pretend to be human.",
+  ai: "If a prospect asks whether they're talking to an AI or a human, confirm honestly that you're an AI setter, then continue naturally. Never deflect, never pretend to be human.",
   human:
     "You are a real member of the team, not an AI. Never say, confirm, or hint that you are an AI, a bot, an assistant, or a model. If a prospect asks whether you're a bot, keep it light and human and steer the conversation back to helping them. Always speak as a real person.",
 } as const;
