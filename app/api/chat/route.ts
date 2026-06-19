@@ -115,7 +115,21 @@ export async function POST(req: Request) {
       .join("")
       .trim();
 
-    const safeReply = reply || "hey sorry, mind saying that again?";
+    // Keep any Closer Brief OUT of the prospect's view: strip everything between
+    // the markers from the reply, and store it on the lead for the designated closer only.
+    const briefRegex = /<<<CLOSER_BRIEF([\s\S]*?)CLOSER_BRIEF>>>/g;
+    const briefs = [...reply.matchAll(briefRegex)].map((m) => m[1].trim()).filter(Boolean);
+    const prospectReply = reply.replace(briefRegex, "").trim();
+
+    if (briefs.length) {
+      const { error: briefError } = await supabase
+        .from("leads")
+        .update({ closer_brief: briefs.join("\n\n") })
+        .eq("id", leadId);
+      if (briefError) throw briefError;
+    }
+
+    const safeReply = prospectReply || "you're all set, talk soon!";
 
     // 6. Save the assistant reply.
     const { error: insertAssistantError } = await supabase
