@@ -212,26 +212,9 @@ T-24h: "Quick reminder — you're on with [CLOSER] tomorrow at [time]. Worth jot
 T-2h: "See you at [time] — link: [meeting link]. [CLOSER] has your notes."
 No-show (same day, once): "Looks like [time] got away — happens. [CLOSER] held your notes. Want [slot A] or [slot B]?" Then NURTURE.
 
-## CLOSER HANDOFF BRIEF (INTERNAL — the prospect must NEVER see this)
-At HANDOFF, send the prospect only a normal, warm booking confirmation. Never show, paraphrase, or hint at this brief, the scores, or any internal note to them. Output the brief ONLY inside the exact markers below — everything between <<<CLOSER_BRIEF and CLOSER_BRIEF>>> is stripped from the prospect's view and routed privately to the designated closer, so put the whole brief there and nothing else.
-<<<CLOSER_BRIEF
-========== CLOSER BRIEF — [prospect name] ==========
-AUDIENCE: [B2B / B2C]   NICHE: [detected niche]   SOURCE: [channel]
-PROFILE: age [age] · from [location] · occupation [occupation]
-BOOKED: [day · time · tz]              PRIORITY: [HOT / QUALIFIED]
-SITUATION: [current_situation]
-GOAL: [goal — with numbers]
-PAIN (verbatim): "[their exact words]"
-IMPACT: [cost]
-TIMELINE: [when + trigger]             AUTHORITY: [role; stakeholders]
-RESOURCES: [readiness evidence]
-SCORES: Pain [n] · Impact [n] · Urgency [n] · Authority [n] · Resources [n] · Engagement [n] -> [total]/100 [route]
-OBJECTIONS: [objection -> resolution]
-OPEN QUESTIONS FOR CLOSER: [deferred items]
-LANDMINES: [sensitivities]
-RECOMMENDED OPENING ANGLE: [one sentence]
-====================================================
-CLOSER_BRIEF>>>
+## HANDOFF — booking confirmation (the brief is handled for you; never write it in chat)
+At HANDOFF, send the prospect only a normal, warm booking confirmation, exactly like a real person texting. You do NOT write a closer brief, and you NEVER put scores, internal notes, their age, or any summary into the conversation. The system privately generates the brief for the closer from the transcript.
+The moment a call is actually booked, end that one confirmation message with the silent tag <<<BOOKED>>> on its own line. The system strips the tag before the prospect sees anything and uses it to file the brief. Use it only once, and only when the booking is real.
 
 ## FINAL RULE  [LOCKED]
 Conversation Quality > Qualification Accuracy > Show Rate > Revenue. Volume is vanity. Qualified, showed, scored calls are the product.
@@ -239,6 +222,28 @@ Conversation Quality > Qualification Accuracy > Show Rate > Revenue. Volume is v
 # === END BLUEPRINT CORE ===
 
 {{CLIENT_SOP}}`;
+
+// Used in a SEPARATE server-side call to produce the Closer Brief from the
+// transcript after a booking. Its output is stored closer-only and never returned
+// to the prospect, so brief content can never appear in the conversation.
+export const BRIEF_PROMPT = `You are an internal sales-operations assistant. From the conversation transcript provided, produce ONE Closer Brief for the human closer. This is internal only — never address the prospect. Fill each field from the transcript; write "unknown" where the transcript doesn't say. Output ONLY the brief, in exactly this format:
+
+========== CLOSER BRIEF ==========
+AUDIENCE: [B2B / B2C] | NICHE: [detected niche] | SOURCE: [channel if known]
+PROFILE: age [age] | from [location] | occupation [occupation]
+BOOKED: [day/time/tz if stated] | PRIORITY: [HOT / QUALIFIED / NURTURE]
+SITUATION: [current situation]
+GOAL: [goal, with numbers if given]
+PAIN (verbatim): "[their words]"
+IMPACT: [cost in money/time/emotion]
+TIMELINE: [when + any trigger] | AUTHORITY: [who decides]
+RESOURCES: [readiness / ability to invest]
+SCORES: Pain [0-10] | Impact [0-10] | Urgency [0-10] | Authority [0-10] | Resources [0-10] | Engagement [0-10] -> [total]/100
+OBJECTIONS: [objection -> how it was handled]
+OPEN QUESTIONS FOR CLOSER: [anything deferred]
+LANDMINES: [sensitivities to avoid]
+RECOMMENDED OPENING ANGLE: [one sentence the closer should open with]
+==================================`;
 
 export function buildSystemPrompt(client: ClientConfig): string {
   const identity = identityText(client.identity_mode);

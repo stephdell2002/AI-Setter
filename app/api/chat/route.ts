@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getSupabaseAdmin } from "@/lib/supabase";
-import { buildSystemPrompt } from "@/lib/brain";
+import { buildSystemPrompt, BRIEF_PROMPT } from "@/lib/brain";
 
 export const runtime = "nodejs";
 
@@ -115,21 +115,14 @@ export async function POST(req: Request) {
       .join("")
       .trim();
 
-    // Keep any Closer Brief OUT of the prospect's view: strip everything between
-    // the markers from the reply, and store it on the lead for the designated closer only.
-    const briefRegex = /<<<CLOSER_BRIEF([\s\S]*?)CLOSER_BRIEF>>>/g;
-    const briefs = [...reply.matchAll(briefRegex)].map((m) => m[1].trim()).filter(Boolean);
-    const prospectReply = reply.replace(briefRegex, "").trim();
-
-    if (briefs.length) {
-      const { error: briefError } = await supabase
-        .from("leads")
-        .update({ closer_brief: briefs.join("\n\n") })
-        .eq("id", leadId);
-      if (briefError) throw briefError;
-    }
-
-    const safeReply = prospectReply || "you're all set, talk soon!";
+    // The brief is NEVER produced in the conversation. Detect the silent booking
+    // signal, then strip it (and any stray internal tags) so nothing leaks to chat.
+    const booked = /<<<BOOKED>>>/.test(reply);
+    const safeReply =
+      reply
+        .replace(/<<<BOOKED>>>/g, "")
+        .replace(/<<<CLOSER_BRIEF[\s\S]*?CLOSER_BRIEF>>>/g, "")
+        .trim() || "you're all set, talk soon!";
 
     // 6. Save the assistant reply.
     const { error: insertAssistantError } = await supabase
@@ -141,6 +134,37 @@ export async function POST(req: Request) {
         content: safeReply,
       });
     if (insertAssistantError) throw insertAssistantError;
+
+    // On a confirmed booking, generate the Closer Brief in a SEPARATE call (off the
+    // transcript) and store it closer-only. Its content never touches the conversation.
+    if (booked) {
+      try {
+        const transcript = [
+          ...(history ?? []).map((m) => `${m.role}: ${m.content}`),
+          `assistant: ${safeReply}`,
+        ].join("\n");
+        const briefCompletion = await anthropic.messages.create({
+          model: MODEL,
+          max_tokens: 700,
+          system: BRIEF_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: `Conversation transcript:\n\n${transcript}\n\nGenerate the closer brief now.`,
+            },
+          ],
+        });
+        const brief = briefCompletion.content
+          .map((b) => (b.type === "text" ? b.text : ""))
+          .join("")
+          .trim();
+        if (brief) {
+          await supabase.from("leads").update({ closer_brief: brief }).eq("id", leadId);
+        }
+      } catch (briefErr) {
+        console.error("closer brief generation failed:", briefErr);
+      }
+    }
 
     return NextResponse.json({ leadId, reply: safeReply });
   } catch (err) {
