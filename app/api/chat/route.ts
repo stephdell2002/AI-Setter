@@ -42,7 +42,7 @@ export async function POST(req: Request) {
     // specific setter. With no slug we fall back to the oldest active setter.
     const base = supabase
       .from("clients")
-      .select("id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode")
+      .select("id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode, client_sop")
       .eq("is_active", true);
 
     const { data: client, error: clientError } = slug
