@@ -5,23 +5,30 @@ import { useEffect, useRef, useState } from "react";
 type ChatMessage = { role: "user" | "assistant"; content: string };
 type Mode = "inbound" | "outbound" | "auto";
 
-// In "auto" mode JAIra waits this long for the prospect to engage; if they stay
-// silent it opens the conversation itself. Tunable.
+// In "auto" mode the bot waits this long for the prospect to engage; if they stay
+// silent it opens the conversation itself.
 const AUTO_GREET_DELAY_MS = 4000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default function Chat({
   slug,
   name,
   mode = "inbound",
+  replyDelayMin = 3,
+  replyDelayMax = 8,
 }: {
   slug: string;
   name: string;
   mode?: Mode;
+  replyDelayMin?: number;
+  replyDelayMax?: number;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [leadId, setLeadId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false); // typing indicator
+  const [sending, setSending] = useState(false); // composer busy
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const initiatedRef = useRef(false);
@@ -31,16 +38,37 @@ export default function Chat({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // JAIra opening the conversation itself. "outbound" opens immediately; "auto"
-  // waits briefly and only opens if the prospect hasn't started engaging — so one
-  // setter intelligently alternates between reaching out and waiting for inbound.
+  // Reveal a reply as separate human-style texts: one bubble per line, each with a
+  // short typing pause, so it reads like quick back-to-back messages.
+  async function revealReply(text: string) {
+    const parts = text
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const lines = parts.length ? parts : ["you're all set, talk soon"];
+    for (let i = 0; i < lines.length; i++) {
+      setLoading(true);
+      await sleep(Math.min(2200, Math.max(700, lines[i].length * 45)));
+      setLoading(false);
+      setMessages((prev) => [...prev, { role: "assistant", content: lines[i] }]);
+      if (i < lines.length - 1) await sleep(450);
+    }
+  }
+
+  function replyDelayMs() {
+    const min = Math.max(0, replyDelayMin);
+    const max = Math.max(min, replyDelayMax);
+    return (min + Math.random() * (max - min)) * 1000;
+  }
+
+  // The bot opening the conversation itself (outbound / auto).
   useEffect(() => {
     if (initiatedRef.current) return;
 
     async function jairaOpens() {
       if (initiatedRef.current || engagedRef.current) return;
       initiatedRef.current = true;
-      setLoading(true);
+      setSending(true);
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
@@ -50,12 +78,13 @@ export default function Chat({
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Something went wrong.");
         if (data.leadId) setLeadId(data.leadId);
-        setMessages([{ role: "assistant", content: data.reply }]);
+        await revealReply(data.reply);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong.");
         initiatedRef.current = false;
       } finally {
         setLoading(false);
+        setSending(false);
       }
     }
 
@@ -70,15 +99,18 @@ export default function Chat({
   async function sendMessage(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || sending) return;
 
     engagedRef.current = true; // prospect spoke; cancel any pending auto-open
     setError(null);
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setSending(true);
     setLoading(true);
 
     try {
+      // Human reply delay: don't fire back instantly.
+      await sleep(replyDelayMs());
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -87,14 +119,12 @@ export default function Chat({
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Something went wrong.");
       if (data.leadId) setLeadId(data.leadId);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.reply },
-      ]);
+      await revealReply(data.reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
       setLoading(false);
+      setSending(false);
     }
   }
 
@@ -131,7 +161,7 @@ export default function Chat({
           placeholder="Type a message"
           autoFocus
         />
-        <button type="submit" disabled={loading || !input.trim()}>
+        <button type="submit" disabled={sending || !input.trim()}>
           Send
         </button>
       </form>

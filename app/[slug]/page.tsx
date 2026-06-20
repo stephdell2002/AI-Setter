@@ -11,7 +11,7 @@ async function loadSetter(slug: string) {
   const supabase = getSupabaseAdmin();
   const { data } = await supabase
     .from("clients")
-    .select("name, outbound, opening_mode")
+    .select("name, outbound, opening_mode, reply_delay_min, reply_delay_max")
     .eq("slug", slug)
     .eq("is_active", true)
     .maybeSingle();
@@ -57,5 +57,13 @@ export default async function SetterPage({
   if (ob === "1" || ob === "true") mode = "outbound";
   if (ob === "0" || ob === "false") mode = "inbound";
 
-  return <Chat slug={slug} name={setter.name ?? "Setter"} mode={mode} />;
+  return (
+    <Chat
+      slug={slug}
+      name={setter.name ?? "Setter"}
+      mode={mode}
+      replyDelayMin={setter.reply_delay_min ?? 3}
+      replyDelayMax={setter.reply_delay_max ?? 8}
+    />
+  );
 }
