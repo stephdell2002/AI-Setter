@@ -122,6 +122,10 @@ export async function POST(req: Request) {
       reply
         .replace(/<<<BOOKED>>>/g, "")
         .replace(/<<<CLOSER_BRIEF[\s\S]*?CLOSER_BRIEF>>>/g, "")
+        // Safety net: never let a dash reach the prospect (the #1 AI tell), even
+        // if the model slips past the prompt rules.
+        .replace(/\s*—\s*/g, ", ")
+        .replace(/\s*–\s*/g, " to ")
         .trim() || "you're all set, talk soon!";
 
     // 6. Save the assistant reply.
