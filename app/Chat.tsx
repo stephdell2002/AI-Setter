@@ -26,17 +26,32 @@ export default function Chat({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [leadId, setLeadId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false); // typing indicator
-  const [sending, setSending] = useState(false); // composer busy
+  const [typing, setTyping] = useState(false); // "…" indicator
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const initiatedRef = useRef(false);
-  const engagedRef = useRef(false);
+
+  const leadIdRef = useRef<string | null>(null);
+  const bootedRef = useRef(false); // mount effect ran once
+  const openedRef = useRef(false); // bot already opened
+  const engagedRef = useRef(false); // prospect has spoken / convo exists
+  const seqRef = useRef(0); // increments on each prospect send (batching)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightRef = useRef(false); // a reply is being generated
+  const storeChainRef = useRef<Promise<void>>(Promise.resolve());
+
+  const storageKey = `nameless:lead:${slug}`;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, typing]);
+
+  function persistLead(id: string) {
+    leadIdRef.current = id;
+    try {
+      localStorage.setItem(storageKey, id);
+    } catch {}
+  }
 
   // Reveal a reply as separate human-style texts: one bubble per line, each with a
   // short typing pause, so it reads like quick back-to-back messages.
@@ -47,9 +62,9 @@ export default function Chat({
       .filter(Boolean);
     const lines = parts.length ? parts : ["you're all set, talk soon"];
     for (let i = 0; i < lines.length; i++) {
-      setLoading(true);
+      setTyping(true);
       await sleep(Math.min(2200, Math.max(700, lines[i].length * 45)));
-      setLoading(false);
+      setTyping(false);
       setMessages((prev) => [...prev, { role: "assistant", content: lines[i] }]);
       if (i < lines.length - 1) await sleep(450);
     }
@@ -62,75 +77,145 @@ export default function Chat({
   }
 
   // The bot opening the conversation itself (outbound / auto).
-  useEffect(() => {
-    if (initiatedRef.current) return;
-
-    async function jairaOpens() {
-      if (initiatedRef.current || engagedRef.current) return;
-      initiatedRef.current = true;
-      setSending(true);
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ slug, initiate: true }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Something went wrong.");
-        if (data.leadId) setLeadId(data.leadId);
-        await revealReply(data.reply);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Something went wrong.");
-        initiatedRef.current = false;
-      } finally {
-        setLoading(false);
-        setSending(false);
-      }
-    }
-
-    if (mode === "outbound") {
-      jairaOpens();
-    } else if (mode === "auto") {
-      const t = setTimeout(jairaOpens, AUTO_GREET_DELAY_MS);
-      return () => clearTimeout(t);
-    }
-  }, [mode, slug]);
-
-  async function sendMessage(e: React.FormEvent) {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text || sending) return;
-
-    engagedRef.current = true; // prospect spoke; cancel any pending auto-open
-    setError(null);
-    setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    setSending(true);
-    setLoading(true);
-
+  async function botOpens() {
+    if (openedRef.current || engagedRef.current) return;
+    openedRef.current = true;
     try {
-      // Human reply delay: don't fire back instantly.
-      await sleep(replyDelayMs());
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, leadId, message: text }),
+        body: JSON.stringify({ slug, initiate: true }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Something went wrong.");
-      if (data.leadId) setLeadId(data.leadId);
+      if (data.leadId) persistLead(data.leadId);
       await revealReply(data.reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-      setSending(false);
+      openedRef.current = false;
     }
   }
 
-  function onInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    if (e.target.value.length > 0) engagedRef.current = true; // typing = engaged
-    setInput(e.target.value);
+  // Mount: rehydrate an existing conversation if we have one, otherwise arm the
+  // bot's opening behavior based on mode.
+  useEffect(() => {
+    if (bootedRef.current) return;
+    bootedRef.current = true;
+
+    (async () => {
+      let stored: string | null = null;
+      try {
+        stored = localStorage.getItem(storageKey);
+      } catch {}
+
+      if (stored) {
+        try {
+          const res = await fetch(`/api/chat?leadId=${encodeURIComponent(stored)}`);
+          const data = await res.json();
+          if (Array.isArray(data.messages) && data.messages.length) {
+            leadIdRef.current = stored;
+            engagedRef.current = true; // conversation exists; don't auto-open
+            openedRef.current = true;
+            setMessages(
+              data.messages.map((m: ChatMessage) => ({
+                role: m.role === "assistant" ? "assistant" : "user",
+                content: m.content,
+              }))
+            );
+            return;
+          }
+        } catch {}
+      }
+
+      if (mode === "outbound") {
+        botOpens();
+      } else if (mode === "auto") {
+        autoTimerRef.current = setTimeout(botOpens, AUTO_GREET_DELAY_MS);
+      }
+    })();
+
+    return () => {
+      if (autoTimerRef.current) clearTimeout(autoTimerRef.current);
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [mode, slug]);
+
+  // Persist each prospect message immediately, in order (chained so the first send
+  // establishes the lead before the next one fires, preventing duplicate leads).
+  function storeMessage(text: string) {
+    storeChainRef.current = storeChainRef.current
+      .then(async () => {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slug,
+            leadId: leadIdRef.current,
+            message: text,
+            store_only: true,
+          }),
+        });
+        const data = await res.json();
+        if (data?.leadId) persistLead(data.leadId);
+      })
+      .catch(() => {});
+  }
+
+  // (Re)start the reply timer. Every new prospect message resets it, so a burst of
+  // texts gets batched into one considered reply once they stop for a beat.
+  function scheduleReply() {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(fireReply, replyDelayMs());
+  }
+
+  async function fireReply() {
+    timerRef.current = null;
+    if (inFlightRef.current) return; // in progress; it will re-check and reschedule
+    const mySeq = seqRef.current;
+    inFlightRef.current = true;
+    try {
+      await storeChainRef.current; // make sure every batched message is saved first
+      setTyping(true); // only now does the bot "start typing"
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, leadId: leadIdRef.current, generate: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Something went wrong.");
+      if (data.leadId) persistLead(data.leadId);
+      setTyping(false);
+      if (seqRef.current !== mySeq) {
+        // prospect texted more while we were generating; discard and re-batch
+        inFlightRef.current = false;
+        scheduleReply();
+        return;
+      }
+      await revealReply(data.reply);
+    } catch (err) {
+      setTyping(false);
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      inFlightRef.current = false;
+    }
+  }
+
+  function sendMessage(e: React.FormEvent) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text) return;
+
+    engagedRef.current = true;
+    if (autoTimerRef.current) {
+      clearTimeout(autoTimerRef.current);
+      autoTimerRef.current = null;
+    }
+    setError(null);
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    seqRef.current += 1;
+    storeMessage(text);
+    scheduleReply();
   }
 
   return (
@@ -140,7 +225,7 @@ export default function Chat({
       </header>
 
       <div className="messages">
-        {messages.length === 0 && !loading && mode !== "outbound" && (
+        {messages.length === 0 && !typing && mode !== "outbound" && (
           <p className="empty">Say hey to start the conversation.</p>
         )}
         {messages.map((m, i) => (
@@ -148,7 +233,7 @@ export default function Chat({
             {m.content}
           </div>
         ))}
-        {loading && <div className="bubble assistant typing">…</div>}
+        {typing && <div className="bubble assistant typing">…</div>}
         {error && <p className="error">{error}</p>}
         <div ref={bottomRef} />
       </div>
@@ -157,11 +242,11 @@ export default function Chat({
         <input
           type="text"
           value={input}
-          onChange={onInputChange}
+          onChange={(e) => setInput(e.target.value)}
           placeholder="Type a message"
           autoFocus
         />
-        <button type="submit" disabled={sending || !input.trim()}>
+        <button type="submit" disabled={!input.trim()}>
           Send
         </button>
       </form>
