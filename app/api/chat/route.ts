@@ -2,40 +2,21 @@ import { NextResponse, after } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { buildSystemPrompt, BRIEF_PROMPT } from "@/lib/brain";
+import {
+  MODEL,
+  OUTBOUND_TRIGGER,
+  OUTBOUND_CONTINUATION,
+  FOLLOWUP_FIRST_DELAY_MS,
+  sanitizeForProspect,
+} from "@/lib/reply";
 
 export const runtime = "nodejs";
 
-const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 500;
 
-// Sent as a synthetic opening user turn when a setter runs in cold-outbound mode
-// (the bot messages first). Never stored; it elicits the very first message only.
-const OUTBOUND_TRIGGER =
-  "[You are starting a cold outbound conversation. This prospect has not messaged yet, you are reaching out first. Send only your opening message: short, warm, human, and curiosity sparking, ending with one easy question that invites a reply. Follow your tone rules. Do not pitch or mention booking yet.]";
-
-// Prepended on later turns of an outbound-STARTED conversation only to satisfy the
-// API's "first turn must be from the user" rule. It must NOT carry the opener-only
-// prohibitions (no pitch / no booking), or the bot will refuse to book a warm lead.
-const OUTBOUND_CONTINUATION =
-  "[Context: you opened this conversation cold; the prospect has since replied. Continue naturally per your normal flow, including qualifying and booking when appropriate.]";
-
-// Strip internal tags and neutralize any dash the model slips past the prompt rules
-// (dashes are the #1 AI tell), without mangling real words. Returns the prospect-safe text.
-function sanitizeForProspect(raw: string): string {
-  return raw
-    // Remove the booking signal in any near-miss form the model might emit.
-    .replace(/<{1,}\s*BOOKED\s*>{0,}/gi, "")
-    // Remove a fully-formed closer brief block, plus any unterminated trailing one.
-    .replace(/<<<CLOSER_BRIEF[\s\S]*?CLOSER_BRIEF>>>/g, "")
-    .replace(/<<<CLOSER_BRIEF[\s\S]*$/g, "")
-    // Numeric ranges like 1,200-2,400 read naturally as "to".
-    .replace(/(\d)\s*[—–]\s*(\d)/g, "$1 to $2")
-    // Any remaining em/en dash used as punctuation becomes a comma.
-    .replace(/\s*[—–]\s*/g, ", ")
-    // Clean up a stray comma left at the start of a line/message.
-    .replace(/(^|\n)\s*,\s*/g, "$1")
-    .trim();
-}
+// Prospect opt-out phrases; if any user message matches, we mark the lead DNC so the
+// follow-up cron never bumps them again.
+const OPT_OUT_RE = /\b(stop|unsubscribe|not interested|leave me alone|do not (contact|message)|remove me)\b/i;
 
 // Returns the stored transcript for a lead so the chat can rehydrate after a
 // refresh or a return visit (the bot then keeps its memory instead of greeting
@@ -126,6 +107,17 @@ export async function POST(req: Request) {
         content: message,
       });
       if (insertUserError) throw insertUserError;
+
+      // Prospect re-engaged: clear the pending follow-up and reset the bump count.
+      // If they opted out, mark DNC so the follow-up cron never touches them again.
+      await supabase
+        .from("leads")
+        .update({
+          status: OPT_OUT_RE.test(message) ? "dnc" : "active",
+          followup_count: 0,
+          next_followup_at: null,
+        })
+        .eq("id", leadId);
     }
 
     // store_only: the message is persisted; the client triggers generation once the
@@ -197,6 +189,17 @@ export async function POST(req: Request) {
         content: safeReply,
       });
     if (insertAssistantError) throw insertAssistantError;
+
+    // Schedule (or clear) the silent-lead follow-up. The bot just spoke, so if the
+    // prospect goes quiet the cron will bump them; a real booking stops it.
+    await supabase
+      .from("leads")
+      .update(
+        booked
+          ? { status: "booked", next_followup_at: null }
+          : { next_followup_at: new Date(Date.now() + FOLLOWUP_FIRST_DELAY_MS).toISOString() }
+      )
+      .eq("id", leadId);
 
     // On a confirmed booking, generate the Closer Brief in a SEPARATE call (off the
     // transcript) and store it closer-only. Run it AFTER the response so the
