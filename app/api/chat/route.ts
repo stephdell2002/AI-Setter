@@ -8,6 +8,9 @@ import {
   OUTBOUND_CONTINUATION,
   FOLLOWUP_FIRST_DELAY_MS,
   sanitizeForProspect,
+  assistantQuestionStreak,
+  NO_QUESTION_DIRECTIVE,
+  dropTrailingQuestion,
 } from "@/lib/reply";
 
 export const runtime = "nodejs";
@@ -154,6 +157,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Nothing to reply to yet." }, { status: 400 });
     }
 
+    // Cadence guard: if the bot's last two replies both ended in a question, force a
+    // pure "react and breathe" beat this turn. We compute the streak from the STORED
+    // history (before this reply) and, when in an interrogation run, append a marked
+    // directive to the final user turn so it lands right before generation.
+    const streak = assistantQuestionStreak(history ?? []);
+    const forceNoQuestion = streak >= 2;
+    const last = claudeMessages[claudeMessages.length - 1];
+    if (forceNoQuestion && last?.role === "user") {
+      last.content = `${last.content}${NO_QUESTION_DIRECTIVE}`;
+    }
+
     // 5. Build brain + live training and call Claude (server-side only).
     const system = buildSystemPrompt(client);
     const anthropic = new Anthropic({ apiKey });
@@ -177,7 +191,10 @@ export async function POST(req: Request) {
     // signal (tolerant of near-miss tags), then strip it and neutralize dashes so
     // nothing internal or bot-tell-y leaks to the prospect.
     const booked = /<{1,}\s*BOOKED\s*>{0,}/i.test(reply);
-    const safeReply = sanitizeForProspect(reply) || "you're all set, talk soon";
+    // If we were forcing a non-question beat and the model still tacked on a
+    // question, drop it — but never on the booking turn, where the ask is the point.
+    const shaped = forceNoQuestion && !booked ? dropTrailingQuestion(reply) : reply;
+    const safeReply = sanitizeForProspect(shaped) || "you're all set, talk soon";
 
     // 6. Save the assistant reply.
     const { error: insertAssistantError } = await supabase
