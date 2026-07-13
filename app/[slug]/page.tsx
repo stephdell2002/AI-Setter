@@ -45,6 +45,10 @@ export default async function SetterPage({
   const sp = await searchParams;
   const q = Array.isArray(sp.mode) ? sp.mode[0] : sp.mode;
   const ob = Array.isArray(sp.outbound) ? sp.outbound[0] : sp.outbound;
+  // Optional gender hint for demoing the gendered address-term behavior. In
+  // production the Instagram bridge sets this from the profile scan instead.
+  const g = Array.isArray(sp.gender) ? sp.gender[0] : sp.gender;
+  const gender = g === "male" || g === "female" ? g : undefined;
 
   let mode: Mode =
     setter.opening_mode === "outbound" || setter.opening_mode === "auto"
@@ -64,6 +68,7 @@ export default async function SetterPage({
       mode={mode}
       replyDelayMin={setter.reply_delay_min ?? 3}
       replyDelayMax={setter.reply_delay_max ?? 8}
+      gender={gender}
     />
   );
 }

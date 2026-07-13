@@ -17,12 +17,14 @@ export default function Chat({
   mode = "inbound",
   replyDelayMin = 3,
   replyDelayMax = 8,
+  gender,
 }: {
   slug: string;
   name: string;
   mode?: Mode;
   replyDelayMin?: number;
   replyDelayMax?: number;
+  gender?: "male" | "female";
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -84,7 +86,7 @@ export default function Chat({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, initiate: true }),
+        body: JSON.stringify({ slug, initiate: true, ...(gender ? { gender } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Something went wrong.");
@@ -164,6 +166,7 @@ export default function Chat({
             leadId: leadIdRef.current,
             message: text,
             store_only: true,
+            ...(gender ? { gender } : {}),
           }),
         });
         const data = await res.json();
@@ -190,7 +193,7 @@ export default function Chat({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, leadId: leadIdRef.current, generate: true }),
+        body: JSON.stringify({ slug, leadId: leadIdRef.current, generate: true, ...(gender ? { gender } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Something went wrong.");

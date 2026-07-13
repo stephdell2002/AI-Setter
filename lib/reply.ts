@@ -44,3 +44,15 @@ export function toClaudeMessages(history: HistoryRow[]): ChatTurn[] {
     content: String(m.content ?? ""),
   }));
 }
+
+// System-prompt addendum injected per conversation when the prospect's gender is
+// known (e.g. from the Instagram bridge's profile scan, stored on the lead). Drives
+// the gendered ADDRESS TERMS rule in the brain. Unknown gender returns "" so the
+// brain default (no gendered address terms) applies.
+export function genderContext(gender?: string | null): string {
+  if (gender === "male")
+    return "\n\n## PROSPECT CONTEXT\nThis prospect is a man. Light masculine address terms (man, bro, brother, g) are allowed, used sparingly and naturally in your voice.";
+  if (gender === "female")
+    return "\n\n## PROSPECT CONTEXT\nThis prospect is a woman. Do NOT use bro, man, brother, g, dude, my guy, or any masculine address term. Stay just as warm and human without them.";
+  return "";
+}

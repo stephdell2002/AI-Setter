@@ -8,6 +8,7 @@ import {
   OUTBOUND_CONTINUATION,
   FOLLOWUP_FIRST_DELAY_MS,
   sanitizeForProspect,
+  genderContext,
 } from "@/lib/reply";
 
 export const runtime = "nodejs";
@@ -51,6 +52,11 @@ export async function POST(req: Request) {
     // batch rapid-fire texts). generate: produce a reply from the stored history.
     const storeOnly = body?.store_only === true;
     const generate = body?.generate === true;
+    // Optional prospect gender ('male' | 'female'); anything else is unknown. Set by
+    // the channel (e.g. the Instagram bridge after scanning the profile); drives the
+    // gendered ADDRESS TERMS rule. Unknown => the setter uses no gendered terms.
+    const genderRaw = body?.gender ? String(body.gender).trim().toLowerCase() : "";
+    const gender = genderRaw === "male" || genderRaw === "female" ? genderRaw : null;
 
     if (!initiate && !generate && !message) {
       return NextResponse.json({ error: "Message is empty." }, { status: 400 });
@@ -86,15 +92,19 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Start a new lead (conversation) on the first message.
+    // 2. Start a new lead (conversation) on the first message. Capture the prospect's
+    // gender if the caller provided it (the Instagram bridge passes what it scanned).
     if (!leadId) {
       const { data: lead, error: leadError } = await supabase
         .from("leads")
-        .insert({ client_id: client.id })
+        .insert({ client_id: client.id, ...(gender ? { gender } : {}) })
         .select("id")
         .single();
       if (leadError) throw leadError;
       leadId = lead.id as string;
+    } else if (gender) {
+      // Existing conversation: persist a (re)detected gender for later turns.
+      await supabase.from("leads").update({ gender }).eq("id", leadId);
     }
 
     // 3. Save the incoming user message (skipped on an outbound kickoff, or on a
@@ -154,8 +164,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Nothing to reply to yet." }, { status: 400 });
     }
 
-    // 5. Build brain + live training and call Claude (server-side only).
-    const system = buildSystemPrompt(client);
+    // 5. Build brain + live training and call Claude (server-side only). Inject the
+    // prospect's gender context when known so the setter applies the ADDRESS TERMS
+    // rule (masculine terms for men, none for women or unknown). We read the stored
+    // value so a gender detected on an earlier turn still applies.
+    const { data: leadRow } = await supabase
+      .from("leads")
+      .select("gender")
+      .eq("id", leadId)
+      .maybeSingle();
+    const system = buildSystemPrompt(client) + genderContext(leadRow?.gender ?? null);
     const anthropic = new Anthropic({ apiKey });
     const completion = await anthropic.messages.create({
       model: MODEL,

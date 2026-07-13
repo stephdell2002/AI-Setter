@@ -10,6 +10,7 @@ import {
   MAX_FOLLOWUPS,
   sanitizeForProspect,
   toClaudeMessages,
+  genderContext,
 } from "@/lib/reply";
 
 export const runtime = "nodejs";
@@ -49,7 +50,7 @@ export async function GET(req: Request) {
   // Due leads: still active, a bump is scheduled and past due, under the cap.
   const { data: due, error } = await supabase
     .from("leads")
-    .select("id, client_id, followup_count")
+    .select("id, client_id, followup_count, gender")
     .eq("status", "active")
     .not("next_followup_at", "is", null)
     .lte("next_followup_at", nowIso)
@@ -95,7 +96,7 @@ export async function GET(req: Request) {
       const completion = await anthropic.messages.create({
         model: MODEL,
         max_tokens: 300,
-        system: buildSystemPrompt(client),
+        system: buildSystemPrompt(client) + genderContext(lead.gender),
         messages: msgs,
       });
       const bump = sanitizeForProspect(
