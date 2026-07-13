@@ -103,9 +103,20 @@ export default function Chat({
     bootedRef.current = true;
 
     (async () => {
+      // ?fresh=1 (or ?new / ?reset) forces a brand-new conversation on the latest
+      // build, ignoring and clearing any saved thread in this browser. Handy for a
+      // shareable demo link that never rehydrates someone's old chat.
+      let forceFresh = false;
+      try {
+        const p = new URLSearchParams(window.location.search);
+        const v = (p.get("fresh") ?? p.get("new") ?? p.get("reset") ?? "").toLowerCase();
+        forceFresh = v === "1" || v === "true" || v === "yes";
+      } catch {}
+
       let stored: string | null = null;
       try {
-        stored = localStorage.getItem(storageKey);
+        stored = forceFresh ? null : localStorage.getItem(storageKey);
+        if (forceFresh) localStorage.removeItem(storageKey);
       } catch {}
 
       if (stored) {
