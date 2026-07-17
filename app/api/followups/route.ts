@@ -22,7 +22,7 @@ export const maxDuration = 60;
 const BATCH = 10;
 
 const CLIENT_FIELDS =
-  "id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode, client_sop";
+  "id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode, client_sop, client_profile";
 
 // Silent-lead follow-up engine. A daily Vercel cron hits this; it finds leads where
 // the bot spoke last and the prospect went quiet, sends one casual no-pressure bump

@@ -13,6 +13,10 @@ export type ClientConfig = {
   // Per-client knowledge base (the CLIENT SOP LAYER). When set, the setter runs the
   // locked blueprint core below with this slotted in. This is the normal product path.
   client_sop?: string | null;
+  // Per-sale customization. When a setter is sold to a specific client, their own SOP
+  // and concrete details go here; injected after the base layer and its facts override
+  // the generic placeholders (closer, booking link, offer, pricing, proof, ICP).
+  client_profile?: string | null;
   // Escape hatch: when set, used verbatim as the entire system prompt (still supports
   // the {{IDENTITY}} and {{CLIENT_SOP}} tokens). Overrides the blueprint + template.
   full_prompt?: string | null;
@@ -303,25 +307,40 @@ export function buildSystemPrompt(client: ClientConfig): string {
   const identity = identityText(client.identity_mode);
   const sop = (client.client_sop ?? "").trim();
 
+  // Per-sale customization. When present, it is appended after the base layer and its
+  // concrete facts take precedence over the generic placeholders in that layer.
+  const profile = (client.client_profile ?? "").trim();
+  const profileBlock = profile
+    ? `\n\n## CLIENT PROFILE (the specific business you are setting for)\n` +
+      `These concrete facts define this exact client and OVERRIDE any generic placeholder in the layer above ` +
+      `(business/brand, the closer, the offer, pricing stance, booking link, proof you may cite, ICP specifics, ` +
+      `and any guardrails). A field left blank here means it is not set, ignore it and fall back to the base ` +
+      `layer for that detail. Only state facts that appear here or in the layer above; never invent beyond them.\n\n` +
+      profile
+    : "";
+
   // Escape hatch: a fully custom prompt overrides everything (still slots tokens).
   const full = (client.full_prompt ?? "").trim();
   if (full) {
-    return full
-      .replaceAll("{{CLIENT_SOP}}", sop)
-      .replaceAll("{{IDENTITY}}", identity);
+    return (
+      full.replaceAll("{{CLIENT_SOP}}", sop).replaceAll("{{IDENTITY}}", identity) + profileBlock
+    );
   }
 
-  // Product path: the locked blueprint core + this client's SOP layer.
+  // Product path: the locked blueprint core + this client's SOP layer + profile.
   if (sop) {
-    return BLUEPRINT_CORE
-      .replaceAll("{{CLIENT_SOP}}", sop)
-      .replaceAll("{{IDENTITY}}", identity);
+    return (
+      BLUEPRINT_CORE.replaceAll("{{CLIENT_SOP}}", sop).replaceAll("{{IDENTITY}}", identity) +
+      profileBlock
+    );
   }
 
   // Fallback: the original lightweight template + four training fields.
-  return BRAIN_TEMPLATE.replaceAll("{{system_prompt}}", client.system_prompt ?? "")
-    .replaceAll("{{active_rules}}", client.active_rules ?? "")
-    .replaceAll("{{voice_samples}}", client.voice_samples ?? "")
-    .replaceAll("{{business_context}}", client.business_context ?? "")
-    .replaceAll("{{IDENTITY}}", identity);
+  return (
+    BRAIN_TEMPLATE.replaceAll("{{system_prompt}}", client.system_prompt ?? "")
+      .replaceAll("{{active_rules}}", client.active_rules ?? "")
+      .replaceAll("{{voice_samples}}", client.voice_samples ?? "")
+      .replaceAll("{{business_context}}", client.business_context ?? "")
+      .replaceAll("{{IDENTITY}}", identity) + profileBlock
+  );
 }
