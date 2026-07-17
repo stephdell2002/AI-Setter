@@ -6,7 +6,7 @@ import {
   MODEL,
   OUTBOUND_TRIGGER,
   OUTBOUND_CONTINUATION,
-  FOLLOWUP_FIRST_DELAY_MS,
+  followupDelayMs,
   sanitizeForProspect,
   genderContext,
 } from "@/lib/reply";
@@ -119,11 +119,22 @@ export async function POST(req: Request) {
       if (insertUserError) throw insertUserError;
 
       // Prospect re-engaged: clear the pending follow-up and reset the bump count.
-      // If they opted out, mark DNC so the follow-up cron never touches them again.
+      // If this lead had already received at least one follow-up, this reply IS a
+      // revival, so flag it (unless they're opting out). If they opted out, mark DNC
+      // so the follow-up cron never touches them again.
+      const optOut = OPT_OUT_RE.test(message);
+      const { data: preLead } = await supabase
+        .from("leads")
+        .select("followup_count, revived")
+        .eq("id", leadId)
+        .maybeSingle();
+      const nowRevived =
+        (preLead?.revived ?? false) || (((preLead?.followup_count ?? 0) > 0) && !optOut);
       await supabase
         .from("leads")
         .update({
-          status: OPT_OUT_RE.test(message) ? "dnc" : "active",
+          status: optOut ? "dnc" : "active",
+          revived: nowRevived,
           followup_count: 0,
           next_followup_at: null,
         })
@@ -215,7 +226,7 @@ export async function POST(req: Request) {
       .update(
         booked
           ? { status: "booked", next_followup_at: null }
-          : { next_followup_at: new Date(Date.now() + FOLLOWUP_FIRST_DELAY_MS).toISOString() }
+          : { next_followup_at: new Date(Date.now() + followupDelayMs(0)).toISOString() }
       )
       .eq("id", leadId);
 

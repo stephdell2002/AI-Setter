@@ -5,8 +5,8 @@ import { buildSystemPrompt } from "@/lib/brain";
 import {
   MODEL,
   OUTBOUND_CONTINUATION,
-  FOLLOWUP_TRIGGER,
-  FOLLOWUP_NEXT_DELAY_MS,
+  followupTrigger,
+  followupDelayMs,
   MAX_FOLLOWUPS,
   sanitizeForProspect,
   toClaudeMessages,
@@ -45,6 +45,18 @@ export async function GET(req: Request) {
 
   const supabase = getSupabaseAdmin();
   const anthropic = new Anthropic({ apiKey });
+
+  // Mass-revival backfill: sweep a batch of forgotten cold leads (setter spoke last,
+  // never enrolled, not opted out) into the sequence, due now. This is what lets the
+  // engine work an existing backlog sequentially, not just brand-new conversations.
+  let enrolled = 0;
+  try {
+    const { data: n } = await supabase.rpc("enroll_cold_leads", { p_batch: 300 });
+    enrolled = typeof n === "number" ? n : 0;
+  } catch (e) {
+    console.error("enroll_cold_leads failed:", e);
+  }
+
   const nowIso = new Date().toISOString();
 
   // Due leads: still active, a bump is scheduled and past due, under the cap.
@@ -81,53 +93,74 @@ export async function GET(req: Request) {
       const msgs = toClaudeMessages(history ?? []);
       if (!msgs.length) continue;
 
-      // Only bump if the bot genuinely spoke last. If the prospect replied but the
-      // flag wasn't cleared for any reason, clear it and skip (never double-text them).
-      if (msgs[msgs.length - 1].role !== "assistant") {
-        await supabase.from("leads").update({ next_followup_at: null }).eq("id", lead.id);
-        continue;
-      }
+      const setterSpokeLast = msgs[msgs.length - 1].role === "assistant";
 
       if (msgs[0].role === "assistant") {
         msgs.unshift({ role: "user", content: OUTBOUND_CONTINUATION });
       }
-      msgs.push({ role: "user", content: FOLLOWUP_TRIGGER });
+
+      // Two shapes reach this loop:
+      //  - setter spoke last  -> send the next follow-up in the 5-step sequence.
+      //  - prospect messaged and was never answered -> ANSWER them for real (this is
+      //    not a follow-up; it starts the sequence clock at #0).
+      const number = (lead.followup_count ?? 0) + 1;
+      if (setterSpokeLast) {
+        msgs.push({ role: "user", content: followupTrigger(number) });
+      }
 
       const completion = await anthropic.messages.create({
         model: MODEL,
-        max_tokens: 300,
+        max_tokens: setterSpokeLast ? 300 : 500,
         system: buildSystemPrompt(client) + genderContext(lead.gender),
         messages: msgs,
       });
-      const bump = sanitizeForProspect(
-        completion.content.map((b) => (b.type === "text" ? b.text : "")).join("")
-      );
-      if (!bump) continue;
+      const raw = completion.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+      const reply = sanitizeForProspect(raw);
+      if (!reply) continue;
+
+      const booked = /<{1,}\s*BOOKED\s*>{0,}/i.test(raw);
 
       await supabase.from("messages").insert({
         lead_id: lead.id,
         client_id: client.id,
         role: "assistant",
-        content: bump,
+        content: reply,
       });
 
-      const count = (lead.followup_count ?? 0) + 1;
-      const done = count >= MAX_FOLLOWUPS;
-      await supabase
-        .from("leads")
-        .update({
-          followup_count: count,
-          status: done ? "nurture" : "active",
-          next_followup_at: done
-            ? null
-            : new Date(Date.now() + FOLLOWUP_NEXT_DELAY_MS).toISOString(),
-        })
-        .eq("id", lead.id);
+      if (booked) {
+        await supabase
+          .from("leads")
+          .update({ status: "booked", next_followup_at: null })
+          .eq("id", lead.id);
+      } else if (setterSpokeLast) {
+        // After sending #number, park to nurture if that was the final (5th) revival,
+        // otherwise schedule the next step per the 5-step cadence.
+        const done = number >= MAX_FOLLOWUPS;
+        await supabase
+          .from("leads")
+          .update({
+            followup_count: number,
+            status: done ? "nurture" : "active",
+            next_followup_at: done
+              ? null
+              : new Date(Date.now() + followupDelayMs(number)).toISOString(),
+          })
+          .eq("id", lead.id);
+      } else {
+        // Answered a never-replied opt-in: start the follow-up clock fresh at #0.
+        await supabase
+          .from("leads")
+          .update({
+            status: "active",
+            next_followup_at: new Date(Date.now() + followupDelayMs(0)).toISOString(),
+          })
+          .eq("id", lead.id);
+      }
       bumped++;
     } catch (e) {
       console.error("followup failed for lead", lead.id, e);
     }
   }
 
-  return NextResponse.json({ processed: (due ?? []).length, bumped });
+  return NextResponse.json({ enrolled, processed: (due ?? []).length, bumped });
 }

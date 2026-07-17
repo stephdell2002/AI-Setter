@@ -12,15 +12,37 @@ export const OUTBOUND_TRIGGER =
 export const OUTBOUND_CONTINUATION =
   "[Context: you opened this conversation cold; the prospect has since replied. Continue naturally per your normal flow, including qualifying and booking when appropriate.]";
 
-// Appended as the final user turn when the follow-up cron revives a silent lead.
-export const FOLLOWUP_TRIGGER =
-  "[SYSTEM: The prospect went quiet after your last message and some time has passed. Send ONE light, casual, no-pressure nudge to revive the chat, in your normal texting voice, referencing where you left off in a natural way. One or two very short texts. No 'just following up', no guilt, no salesy push. A small easy question to re-open is fine. This is a bump, not a fresh conversation.]";
+// ---- Pipeline Revival Engine -------------------------------------------------
+// Proven 5-step re-engagement sequence. Each delay is measured from the moment the
+// setter last spoke with no reply from the prospect:
+//   #1  24h after the setter's last message
+//   #2  24h after #1
+//   #3  24h after #2
+//   #4  96h after #3
+//   #5  3 weeks after #4  (the revival attempt, the whole point of the system)
+// followupDelayMs(c) = time to the NEXT follow-up given c already sent, so the chat
+// route (c = 0) schedules #1 at +24h and the cron chains the rest.
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+export const FOLLOWUP_SCHEDULE_MS = [24 * HOUR, 24 * HOUR, 24 * HOUR, 96 * HOUR, 21 * DAY];
+export const MAX_FOLLOWUPS = FOLLOWUP_SCHEDULE_MS.length; // 5
+export function followupDelayMs(sentSoFar: number): number {
+  return FOLLOWUP_SCHEDULE_MS[sentSoFar] ?? FOLLOWUP_SCHEDULE_MS[FOLLOWUP_SCHEDULE_MS.length - 1];
+}
 
-// Follow-up cadence. First bump is scheduled this long after the bot's reply; the
-// daily cron picks it up on its next run. Second bump waits longer, then we stop.
-export const FOLLOWUP_FIRST_DELAY_MS = 18 * 60 * 60 * 1000; // ~18h
-export const FOLLOWUP_NEXT_DELAY_MS = 3 * 24 * 60 * 60 * 1000; // ~3 days
-export const MAX_FOLLOWUPS = 2;
+// The instruction appended as the final user turn when the cron revives a lead.
+// `n` is which follow-up this is (1..5); the tone escalates gently, and #5 is the
+// real revival re-opener after a long gap.
+export function followupTrigger(n: number): string {
+  if (n >= 5)
+    return "[SYSTEM: It has been about three weeks since this prospect went quiet. This is a genuine revival attempt, a warm re-opener, not a guilt trip. In your normal texting voice, reach back out like a real person circling back after a while: acknowledge lightly that it has been a minute, reference where you left off in a natural way, and give them an easy, no-pressure way back in (timing may have changed, could be a better moment now). One or two very short texts, end on one soft easy question. No 'just following up', no pressure, no salesy push.]";
+  if (n === 4)
+    return "[SYSTEM: The prospect has gone quiet through a few nudges and several days have passed. Send ONE relaxed, no-pressure check-in in your normal texting voice, a little more direct than a first nudge but still warm and totally unbothered, referencing where you left off. One or two very short texts, end on one easy question. No guilt, no 'just following up', no salesy push.]";
+  return "[SYSTEM: The prospect went quiet after your last message and some time has passed. Send ONE light, casual, no-pressure nudge to revive the chat, in your normal texting voice, referencing where you left off in a natural way. One or two very short texts. No 'just following up', no guilt, no salesy push. A small easy question to re-open is fine. This is a bump, not a fresh conversation.]";
+}
+
+// Back-compat alias (a plain first-nudge trigger) for any caller not passing a number.
+export const FOLLOWUP_TRIGGER = followupTrigger(1);
 
 // Strip internal tags and neutralize any dash the model slips past the prompt rules
 // (dashes are the #1 AI tell), without mangling real words. Returns prospect-safe text.
