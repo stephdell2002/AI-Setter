@@ -157,8 +157,11 @@ export async function bookCall(params: {
       const uid = (r.json as { data?: { uid?: string } })?.data?.uid;
       return { success: true, uid };
     }
+    // Log the full response so a shape mismatch is diagnosable from the runtime logs.
+    console.error("cal.com booking failed:", r.status, JSON.stringify(r.json));
     return { success: false, error: `cal.com returned ${r.status}` };
   } catch (e) {
+    console.error("cal.com booking threw:", e);
     return { success: false, error: String(e) };
   }
 }
