@@ -6,8 +6,8 @@ import {
   MODEL,
   OUTBOUND_CONTINUATION,
   followupTrigger,
-  followupDelayMs,
-  MAX_FOLLOWUPS,
+  followupScheduleMs,
+  nextFollowupDelayMs,
   sanitizeForProspect,
   toClaudeMessages,
   genderContext,
@@ -22,7 +22,7 @@ export const maxDuration = 60;
 const BATCH = 10;
 
 const CLIENT_FIELDS =
-  "id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode, client_sop, client_profile";
+  "id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode, client_sop, client_profile, followup_delays_seconds";
 
 // Silent-lead follow-up engine. A daily Vercel cron hits this; it finds leads where
 // the bot spoke last and the prospect went quiet, sends one casual no-pressure bump
@@ -60,14 +60,14 @@ export async function GET(req: Request) {
 
   const nowIso = new Date().toISOString();
 
-  // Due leads: still active, a bump is scheduled and past due, under the cap.
+  // Due leads: still active, a bump is scheduled and past due. The cap is enforced
+  // per lead below, against the owning setter's OWN schedule length.
   const { data: due, error } = await supabase
     .from("leads")
-    .select("id, client_id, followup_count, gender")
+    .select("id, client_id, followup_count, gender, next_followup_at")
     .eq("status", "active")
     .not("next_followup_at", "is", null)
     .lte("next_followup_at", nowIso)
-    .lt("followup_count", MAX_FOLLOWUPS)
     .order("next_followup_at", { ascending: true })
     .limit(BATCH);
   if (error) {
@@ -85,6 +85,19 @@ export async function GET(req: Request) {
         .maybeSingle();
       if (!client) continue;
 
+      // This setter's own Revival Engine cadence (per-row override or the default).
+      const schedule = followupScheduleMs(client.followup_delays_seconds);
+      const maxFollowups = schedule.length;
+      const sent = lead.followup_count ?? 0;
+      if (sent >= maxFollowups) {
+        // Over this setter's cap: park it so it stops surfacing as due.
+        await supabase
+          .from("leads")
+          .update({ status: "nurture", next_followup_at: null })
+          .eq("id", lead.id);
+        continue;
+      }
+
       const { data: history } = await supabase
         .from("messages")
         .select("role, content")
@@ -101,12 +114,12 @@ export async function GET(req: Request) {
       }
 
       // Two shapes reach this loop:
-      //  - setter spoke last  -> send the next follow-up in the 5-step sequence.
+      //  - setter spoke last  -> send the next follow-up in the setter's sequence.
       //  - prospect messaged and was never answered -> ANSWER them for real (this is
       //    not a follow-up; it starts the sequence clock at #0).
-      const number = (lead.followup_count ?? 0) + 1;
+      const number = sent + 1;
       if (setterSpokeLast) {
-        msgs.push({ role: "user", content: followupTrigger(number) });
+        msgs.push({ role: "user", content: followupTrigger(number, maxFollowups) });
       }
 
       const completion = await anthropic.messages.create({
@@ -121,42 +134,40 @@ export async function GET(req: Request) {
 
       const booked = /<{1,}\s*BOOKED\s*>{0,}/i.test(raw);
 
+      // Claim the step BEFORE writing the message (compare-and-swap on
+      // next_followup_at) so a racing cron run or the open chat tab can't
+      // double-send the same bump.
+      const done = number >= maxFollowups;
+      const patch = booked
+        ? { status: "booked", next_followup_at: null }
+        : setterSpokeLast
+          ? {
+              followup_count: number,
+              status: done ? "nurture" : "active",
+              next_followup_at: done
+                ? null
+                : new Date(Date.now() + nextFollowupDelayMs(schedule, number)).toISOString(),
+            }
+          : {
+              // Answered a never-replied opt-in: start the clock fresh at #0.
+              status: "active",
+              next_followup_at: new Date(Date.now() + nextFollowupDelayMs(schedule, 0)).toISOString(),
+            };
+      const { data: claimed } = await supabase
+        .from("leads")
+        .update(patch)
+        .eq("id", lead.id)
+        .eq("status", "active")
+        .eq("next_followup_at", lead.next_followup_at)
+        .select("id");
+      if (!claimed?.length) continue; // another sender already handled this step
+
       await supabase.from("messages").insert({
         lead_id: lead.id,
         client_id: client.id,
         role: "assistant",
         content: reply,
       });
-
-      if (booked) {
-        await supabase
-          .from("leads")
-          .update({ status: "booked", next_followup_at: null })
-          .eq("id", lead.id);
-      } else if (setterSpokeLast) {
-        // After sending #number, park to nurture if that was the final (5th) revival,
-        // otherwise schedule the next step per the 5-step cadence.
-        const done = number >= MAX_FOLLOWUPS;
-        await supabase
-          .from("leads")
-          .update({
-            followup_count: number,
-            status: done ? "nurture" : "active",
-            next_followup_at: done
-              ? null
-              : new Date(Date.now() + followupDelayMs(number)).toISOString(),
-          })
-          .eq("id", lead.id);
-      } else {
-        // Answered a never-replied opt-in: start the follow-up clock fresh at #0.
-        await supabase
-          .from("leads")
-          .update({
-            status: "active",
-            next_followup_at: new Date(Date.now() + followupDelayMs(0)).toISOString(),
-          })
-          .eq("id", lead.id);
-      }
       bumped++;
     } catch (e) {
       console.error("followup failed for lead", lead.id, e);

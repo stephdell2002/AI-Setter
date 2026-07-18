@@ -39,6 +39,7 @@ export default function Chat({
   const seqRef = useRef(0); // increments on each prospect send (batching)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightRef = useRef(false); // a reply is being generated
   const storeChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -78,6 +79,48 @@ export default function Chat({
     return (min + Math.random() * (max - min)) * 1000;
   }
 
+  // ---- Embedded Revival Engine ------------------------------------------------
+  // While this tab is open, the chat runs the setter's own follow-up schedule
+  // itself: after every bot message the server says when the next bump is due and
+  // we arm a timer for it. The server (lead row) stays the source of truth; the
+  // timer only asks "due yet?", so a cron run or a second tab can never cause a
+  // double-send. Pass null/undefined to just cancel.
+  function armFollowup(ms?: number | null) {
+    if (followupTimerRef.current) clearTimeout(followupTimerRef.current);
+    followupTimerRef.current = null;
+    if (typeof ms !== "number" || !Number.isFinite(ms)) return;
+    followupTimerRef.current = setTimeout(fireFollowup, Math.max(250, ms) + 400);
+  }
+
+  async function fireFollowup() {
+    followupTimerRef.current = null;
+    if (!leadIdRef.current) return;
+    // A live reply is pending or generating; check back after it lands.
+    if (inFlightRef.current || timerRef.current) {
+      armFollowup(3000);
+      return;
+    }
+    const mySeq = seqRef.current;
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, leadId: leadIdRef.current, followup: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Something went wrong.");
+      // If the prospect typed while we fetched, skip the reveal (the message is
+      // stored server-side and shows on the next load); their reply resets the
+      // sequence anyway.
+      if (data.reply && seqRef.current === mySeq) {
+        await revealReply(data.reply);
+      }
+      if (!data.done) armFollowup(data.nextInMs);
+    } catch {
+      armFollowup(30000); // transient failure; try again in a bit
+    }
+  }
+
   // The bot opening the conversation itself (outbound / auto).
   async function botOpens() {
     if (openedRef.current || engagedRef.current) return;
@@ -92,6 +135,7 @@ export default function Chat({
       if (!res.ok) throw new Error(data?.error || "Something went wrong.");
       if (data.leadId) persistLead(data.leadId);
       await revealReply(data.reply);
+      armFollowup(data.nextFollowupInMs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
       openedRef.current = false;
@@ -135,6 +179,9 @@ export default function Chat({
                 content: m.content,
               }))
             );
+            // Pick the sequence back up: the server says whether a follow-up is
+            // due now, later (we arm the remaining time), or never (done/booked).
+            fireFollowup();
             return;
           }
         } catch {}
@@ -150,6 +197,7 @@ export default function Chat({
     return () => {
       if (autoTimerRef.current) clearTimeout(autoTimerRef.current);
       if (timerRef.current) clearTimeout(timerRef.current);
+      if (followupTimerRef.current) clearTimeout(followupTimerRef.current);
     };
   }, [mode, slug]);
 
@@ -206,6 +254,7 @@ export default function Chat({
         return;
       }
       await revealReply(data.reply);
+      armFollowup(data.nextFollowupInMs);
     } catch (err) {
       setTyping(false);
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -224,6 +273,9 @@ export default function Chat({
       clearTimeout(autoTimerRef.current);
       autoTimerRef.current = null;
     }
+    // Prospect spoke: the pending bump is off; a fresh clock is armed after the
+    // bot's next reply (their message also resets the count server-side).
+    armFollowup(null);
     setError(null);
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: text }]);

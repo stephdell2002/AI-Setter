@@ -13,31 +13,54 @@ export const OUTBOUND_CONTINUATION =
   "[Context: you opened this conversation cold; the prospect has since replied. Continue naturally per your normal flow, including qualifying and booking when appropriate.]";
 
 // ---- Pipeline Revival Engine -------------------------------------------------
-// Proven 5-step re-engagement sequence. Each delay is measured from the moment the
-// setter last spoke with no reply from the prospect:
-//   #1  3s after the setter's last message (testing mode)
-//   #2  5s after #1
-//   #3  4s after #2
-//   #4  6s after #3
-//   #5  8s after #4
-// followupDelayMs(c) = time to the NEXT follow-up given c already sent, so the chat
-// route (c = 0) schedules #1 at +3s and the cron chains the rest.
+// Proven 5-step re-engagement sequence (the production default). Each delay is
+// measured from the moment the setter last spoke with no reply from the prospect:
+//   #1  24h after the setter's last message
+//   #2  24h after #1
+//   #3  24h after #2
+//   #4  96h after #3
+//   #5  3 weeks after #4  (the revival attempt, the whole point of the system)
+// Every setter can carry its OWN schedule in clients.followup_delays_seconds (an
+// array of delays in seconds), so each sold setter's cadence is tunable per client
+// without touching code. NULL/empty/invalid falls back to this default.
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-export const FOLLOWUP_SCHEDULE_MS = [3000, 5000, 4000, 6000, 8000]; // 3-8s for testing
+export const FOLLOWUP_SCHEDULE_MS = [24 * HOUR, 24 * HOUR, 24 * HOUR, 96 * HOUR, 21 * DAY];
 export const MAX_FOLLOWUPS = FOLLOWUP_SCHEDULE_MS.length; // 5
-export function followupDelayMs(sentSoFar: number): number {
-  return FOLLOWUP_SCHEDULE_MS[sentSoFar] ?? FOLLOWUP_SCHEDULE_MS[FOLLOWUP_SCHEDULE_MS.length - 1];
+
+// The effective schedule (in ms) for a setter: its own followup_delays_seconds when
+// valid, otherwise the production default.
+export function followupScheduleMs(delaysSeconds?: number[] | null): number[] {
+  if (
+    Array.isArray(delaysSeconds) &&
+    delaysSeconds.length > 0 &&
+    delaysSeconds.every((s) => Number.isFinite(s) && s > 0)
+  ) {
+    return delaysSeconds.map((s) => Math.round(s * 1000));
+  }
+  return FOLLOWUP_SCHEDULE_MS;
 }
 
-// The instruction appended as the final user turn when the cron revives a lead.
-// `n` is which follow-up this is (1..5); the tone escalates gently, and #5 is the
-// real revival re-opener after a long gap.
-export function followupTrigger(n: number): string {
-  if (n >= 5)
-    return "[SYSTEM: It has been about three weeks since this prospect went quiet. This is a genuine revival attempt, a warm re-opener, not a guilt trip. In your normal texting voice, reach back out like a real person circling back after a while: acknowledge lightly that it has been a minute, reference where you left off in a natural way, and give them an easy, no-pressure way back in (timing may have changed, could be a better moment now). One or two very short texts, end on one soft easy question. No 'just following up', no pressure, no salesy push.]";
-  if (n === 4)
-    return "[SYSTEM: The prospect has gone quiet through a few nudges and several days have passed. Send ONE relaxed, no-pressure check-in in your normal texting voice, a little more direct than a first nudge but still warm and totally unbothered, referencing where you left off. One or two very short texts, end on one easy question. No guilt, no 'just following up', no salesy push.]";
+// Time to the NEXT follow-up on a schedule given how many were already sent, so the
+// chat route (0 sent) schedules #1 and each send chains the next.
+export function nextFollowupDelayMs(scheduleMs: number[], sentSoFar: number): number {
+  return scheduleMs[sentSoFar] ?? scheduleMs[scheduleMs.length - 1];
+}
+
+// Back-compat: next delay on the default schedule.
+export function followupDelayMs(sentSoFar: number): number {
+  return nextFollowupDelayMs(FOLLOWUP_SCHEDULE_MS, sentSoFar);
+}
+
+// The instruction appended as the final user turn when a follow-up is generated
+// (by the cron or by the chat's own embedded engine). `n` is which follow-up this
+// is (1..total) on the setter's own schedule; the tone escalates gently, and the
+// final step is the real revival re-opener after a long gap.
+export function followupTrigger(n: number, total: number = MAX_FOLLOWUPS): string {
+  if (n >= total)
+    return "[SYSTEM: It has been a long stretch since this prospect went quiet. This is a genuine revival attempt, a warm re-opener, not a guilt trip. In your normal texting voice, reach back out like a real person circling back after a while: acknowledge lightly that it has been a minute, reference where you left off in a natural way, and give them an easy, no-pressure way back in (timing may have changed, could be a better moment now). One or two very short texts, end on one soft easy question. No 'just following up', no pressure, no salesy push.]";
+  if (n === total - 1)
+    return "[SYSTEM: The prospect has gone quiet through a few nudges and a while has passed. Send ONE relaxed, no-pressure check-in in your normal texting voice, a little more direct than a first nudge but still warm and totally unbothered, referencing where you left off. One or two very short texts, end on one easy question. No guilt, no 'just following up', no salesy push.]";
   return "[SYSTEM: The prospect went quiet after your last message and some time has passed. Send ONE light, casual, no-pressure nudge to revive the chat, in your normal texting voice, referencing where you left off in a natural way. One or two very short texts. No 'just following up', no guilt, no salesy push. A small easy question to re-open is fine. This is a bump, not a fresh conversation.]";
 }
 

@@ -6,8 +6,11 @@ import {
   MODEL,
   OUTBOUND_TRIGGER,
   OUTBOUND_CONTINUATION,
-  followupDelayMs,
+  followupScheduleMs,
+  nextFollowupDelayMs,
+  followupTrigger,
   sanitizeForProspect,
+  toClaudeMessages,
   genderContext,
 } from "@/lib/reply";
 import { calConfigured, getOpenDays, bookCall } from "@/lib/calcom";
@@ -108,13 +111,17 @@ export async function POST(req: Request) {
     // batch rapid-fire texts). generate: produce a reply from the stored history.
     const storeOnly = body?.store_only === true;
     const generate = body?.generate === true;
+    // followup: the chat's embedded Revival Engine asking "is a follow-up due?".
+    // The server decides from the lead's state: sends the next bump, returns the
+    // time remaining, or reports the sequence finished.
+    const followup = body?.followup === true;
     // Optional prospect gender ('male' | 'female'); anything else is unknown. Set by
     // the channel (e.g. the Instagram bridge after scanning the profile); drives the
     // gendered ADDRESS TERMS rule. Unknown => the setter uses no gendered terms.
     const genderRaw = body?.gender ? String(body.gender).trim().toLowerCase() : "";
     const gender = genderRaw === "male" || genderRaw === "female" ? genderRaw : null;
 
-    if (!initiate && !generate && !message) {
+    if (!initiate && !generate && !followup && !message) {
       return NextResponse.json({ error: "Message is empty." }, { status: 400 });
     }
 
@@ -133,7 +140,7 @@ export async function POST(req: Request) {
     // specific setter. With no slug we fall back to the oldest active setter.
     const base = supabase
       .from("clients")
-      .select("id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode, client_sop, client_profile")
+      .select("id, system_prompt, active_rules, voice_samples, business_context, full_prompt, identity_mode, client_sop, client_profile, followup_delays_seconds")
       .eq("is_active", true);
 
     const { data: client, error: clientError } = slug
@@ -146,6 +153,94 @@ export async function POST(req: Request) {
         { error: "Setter not found." },
         { status: 404 }
       );
+    }
+
+    // Every setter's own Revival Engine schedule (per-row override or the default).
+    const schedule = followupScheduleMs(client.followup_delays_seconds);
+    const maxFollowups = schedule.length;
+
+    // Chat-embedded Revival Engine: the open chat tab asks whether a follow-up is
+    // due. The lead's row is the source of truth, so a cron run, another tab, or a
+    // prospect reply can't cause a double-send (the update below is a compare-and-
+    // swap on next_followup_at).
+    if (followup) {
+      if (!leadId) return NextResponse.json({ done: true });
+      const { data: fLead } = await supabase
+        .from("leads")
+        .select("status, followup_count, next_followup_at, gender")
+        .eq("id", leadId)
+        .eq("client_id", client.id)
+        .maybeSingle();
+      if (!fLead || fLead.status !== "active" || !fLead.next_followup_at) {
+        return NextResponse.json({ done: true });
+      }
+      const sent = fLead.followup_count ?? 0;
+      if (sent >= maxFollowups) return NextResponse.json({ done: true });
+
+      const dueAt = new Date(fLead.next_followup_at).getTime();
+      if (dueAt > Date.now()) {
+        return NextResponse.json({ due: false, nextInMs: dueAt - Date.now() });
+      }
+
+      const { data: fHistory } = await supabase
+        .from("messages")
+        .select("role, content")
+        .eq("lead_id", leadId)
+        .order("created_at", { ascending: true });
+      const fMsgs = toClaudeMessages(fHistory ?? []);
+      if (!fMsgs.length) return NextResponse.json({ done: true });
+      // Prospect actually spoke last: a normal reply is owed, not a bump. Let the
+      // regular reply path (or the cron's answer-them-for-real shape) handle it.
+      if (fMsgs[fMsgs.length - 1].role !== "assistant") {
+        return NextResponse.json({ due: false, nextInMs: 15000 });
+      }
+      if (fMsgs[0].role === "assistant") {
+        fMsgs.unshift({ role: "user", content: OUTBOUND_CONTINUATION });
+      }
+      const number = sent + 1;
+      fMsgs.push({ role: "user", content: followupTrigger(number, maxFollowups) });
+
+      const anthropicF = new Anthropic({ apiKey });
+      const fCompletion = await anthropicF.messages.create({
+        model: MODEL,
+        max_tokens: 300,
+        system: buildSystemPrompt(client) + genderContext(fLead.gender),
+        messages: fMsgs,
+      });
+      const fRaw = fCompletion.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+      const fReply = sanitizeForProspect(fRaw);
+      if (!fReply) return NextResponse.json({ due: false, nextInMs: 60000 });
+      const fBooked = /<{1,}\s*BOOKED\s*>{0,}/i.test(fRaw);
+
+      // Claim this step BEFORE writing the message; if another sender (cron, other
+      // tab) got here first, next_followup_at no longer matches and we discard.
+      const done = number >= maxFollowups;
+      const nextInMs = done || fBooked ? null : nextFollowupDelayMs(schedule, number);
+      const { data: claimed } = await supabase
+        .from("leads")
+        .update(
+          fBooked
+            ? { status: "booked", next_followup_at: null }
+            : {
+                followup_count: number,
+                status: done ? "nurture" : "active",
+                next_followup_at: done ? null : new Date(Date.now() + (nextInMs as number)).toISOString(),
+              }
+        )
+        .eq("id", leadId)
+        .eq("status", "active")
+        .eq("next_followup_at", fLead.next_followup_at)
+        .select("id");
+      if (!claimed?.length) {
+        return NextResponse.json({ due: false, nextInMs: 5000 });
+      }
+      await supabase.from("messages").insert({
+        lead_id: leadId,
+        client_id: client.id,
+        role: "assistant",
+        content: fReply,
+      });
+      return NextResponse.json({ leadId, reply: fReply, done: done || fBooked, nextInMs });
     }
 
     // 2. Start a new lead (conversation) on the first message. Capture the prospect's
@@ -321,14 +416,16 @@ export async function POST(req: Request) {
       });
     if (insertAssistantError) throw insertAssistantError;
 
-    // Schedule (or clear) the silent-lead follow-up. The bot just spoke, so if the
-    // prospect goes quiet the cron will bump them; a real booking stops it.
+    // Schedule (or clear) the silent-lead follow-up on the setter's own cadence.
+    // The bot just spoke, so if the prospect goes quiet the open chat tab (or the
+    // cron backstop) will bump them; a real booking stops it.
+    const nextFollowupInMs = booked ? null : nextFollowupDelayMs(schedule, 0);
     await supabase
       .from("leads")
       .update(
         booked
           ? { status: "booked", next_followup_at: null }
-          : { next_followup_at: new Date(Date.now() + followupDelayMs(0)).toISOString() }
+          : { next_followup_at: new Date(Date.now() + (nextFollowupInMs as number)).toISOString() }
       )
       .eq("id", leadId);
 
@@ -369,7 +466,7 @@ export async function POST(req: Request) {
       });
     }
 
-    return NextResponse.json({ leadId, reply: safeReply });
+    return NextResponse.json({ leadId, reply: safeReply, nextFollowupInMs });
   } catch (err) {
     console.error("chat route error:", err);
     return NextResponse.json(
