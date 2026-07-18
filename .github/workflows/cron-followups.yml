@@ -1,6 +1,8 @@
 name: Trigger Follow-ups Cron
 
 on:
+  # Manual trigger via GitHub Actions UI
+  workflow_dispatch:
   schedule:
         # Run every 5 minutes (testing)
     - cron: '*/5 * * * *'
