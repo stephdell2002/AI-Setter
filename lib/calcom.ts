@@ -104,3 +104,61 @@ export async function createBookingRaw(params: {
     },
   });
 }
+
+// ---- Higher-level helpers used by the setter's booking tools -----------------
+
+export type OpenSlot = { start: string; label: string; meridiem: "AM" | "PM" };
+export type OpenDay = { date: string; weekday: string; slots: OpenSlot[] };
+
+// The soonest `maxDays` days (from tomorrow) that actually have open slots, each
+// with human-readable, AM/PM-labeled times in the prospect's timezone. The setter
+// offers 2-3 mixed AM/PM from these; the times are real, so no invented slots.
+export async function getOpenDays(timeZone: string, maxDays = 2): Promise<OpenDay[]> {
+  const eventTypeId = await resolveEventTypeId();
+  if (!eventTypeId) return [];
+  const now = Date.now();
+  const start = new Date(now + 24 * 3600 * 1000).toISOString().slice(0, 10); // tomorrow
+  const end = new Date(now + 8 * 24 * 3600 * 1000).toISOString().slice(0, 10); // +8 days
+  const r = await getSlotsRaw({ eventTypeId, start, end, timeZone });
+  const byDate = ((r.json as { data?: Record<string, Array<{ start: string }>> })?.data) ?? {};
+
+  const weekdayFmt = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone });
+  const timeFmt = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone });
+  const hour24Fmt = new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone });
+
+  const days: OpenDay[] = [];
+  for (const date of Object.keys(byDate).sort()) {
+    const arr = byDate[date] ?? [];
+    if (!arr.length) continue;
+    const slots: OpenSlot[] = arr.map((s) => {
+      const d = new Date(s.start);
+      const hour = Number(hour24Fmt.format(d));
+      return { start: s.start, label: timeFmt.format(d), meridiem: hour < 12 ? "AM" : "PM" };
+    });
+    days.push({ date, weekday: weekdayFmt.format(new Date(arr[0].start)), slots });
+    if (days.length >= maxDays) break;
+  }
+  return days;
+}
+
+// Create the booking. Returns success + a confirmation, or a failure the setter can
+// handle by falling back to the link (never by pretending it booked).
+export async function bookCall(params: {
+  start: string;
+  name: string;
+  email: string;
+  timeZone: string;
+}): Promise<{ success: boolean; uid?: string; error?: string }> {
+  const eventTypeId = await resolveEventTypeId();
+  if (!eventTypeId) return { success: false, error: "event type not resolved" };
+  try {
+    const r = await createBookingRaw({ eventTypeId, ...params });
+    if (r.ok) {
+      const uid = (r.json as { data?: { uid?: string } })?.data?.uid;
+      return { success: true, uid };
+    }
+    return { success: false, error: `cal.com returned ${r.status}` };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}

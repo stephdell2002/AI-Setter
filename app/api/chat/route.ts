@@ -10,6 +10,7 @@ import {
   sanitizeForProspect,
   genderContext,
 } from "@/lib/reply";
+import { calConfigured, getOpenDays, bookCall } from "@/lib/calcom";
 
 export const runtime = "nodejs";
 
@@ -18,6 +19,61 @@ const MAX_TOKENS = 500;
 // Prospect opt-out phrases; if any user message matches, we mark the lead DNC so the
 // follow-up cron never bumps them again.
 const OPT_OUT_RE = /\b(stop|unsubscribe|not interested|leave me alone|do not (contact|message)|remove me)\b/i;
+
+// Cal.com booking tools, offered only to the demo (Oliver's offer). They let the
+// setter pull REAL open times and book the call directly instead of sending a link.
+const BOOKING_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "get_open_times",
+    description:
+      "Get the REAL open times for the discovery call from the calendar, in the prospect's timezone. Call this once you know their timezone, right before offering times. Returns the soonest days with open slots (each time labeled and marked AM or PM). Offer the prospect only 2 to 3 times TOTAL from the first day, mixed across AM and PM (never 2-3 AM plus 2-3 PM). If that day does not work, offer 2 to 3 from the next day. Never offer or confirm a time that is not in this list.",
+    input_schema: {
+      type: "object",
+      properties: {
+        timezone: {
+          type: "string",
+          description: "The prospect's IANA timezone, e.g. America/New_York. Ask them if you do not know it.",
+        },
+      },
+      required: ["timezone"],
+    },
+  },
+  {
+    name: "book_call",
+    description:
+      "Book the discovery call on the calendar and send the invite. ONLY call this after the prospect picked one of the exact times returned by get_open_times AND you have their real name and email. If it returns success:false, do NOT say they are booked; apologize lightly and send them the booking link instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        start: { type: "string", description: "The exact `start` value of the chosen slot from get_open_times" },
+        name: { type: "string", description: "The prospect's name" },
+        email: { type: "string", description: "The prospect's email address" },
+        timezone: { type: "string", description: "The prospect's IANA timezone" },
+      },
+      required: ["start", "name", "email", "timezone"],
+    },
+  },
+];
+
+async function runBookingTool(
+  name: string,
+  input: Record<string, unknown>
+): Promise<{ result: unknown; booked: boolean }> {
+  if (name === "get_open_times") {
+    const days = await getOpenDays(String(input.timezone || "America/New_York"), 2);
+    return { result: { days }, booked: false };
+  }
+  if (name === "book_call") {
+    const res = await bookCall({
+      start: String(input.start ?? ""),
+      name: String(input.name ?? ""),
+      email: String(input.email ?? ""),
+      timeZone: String(input.timezone ?? "America/New_York"),
+    });
+    return { result: res, booked: res.success === true };
+  }
+  return { result: { error: "unknown tool" }, booked: false };
+}
 
 // Returns the stored transcript for a lead so the chat can rehydrate after a
 // refresh or a return visit (the bot then keeps its memory instead of greeting
@@ -186,26 +242,72 @@ export async function POST(req: Request) {
       .maybeSingle();
     const system = buildSystemPrompt(client) + genderContext(leadRow?.gender ?? null);
     const anthropic = new Anthropic({ apiKey });
-    const completion = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system,
-      messages: claudeMessages,
-    });
 
-    const reply = completion.content
+    // The demo (Oliver's offer) can self-book via Cal.com: give it the booking tools
+    // and run a short tool-use loop. Any error falls back to a plain reply, and a
+    // failed booking never fakes success (the tool reports it; the setter sends the
+    // link). No other setter touches this calendar.
+    const useCalcom = calConfigured() && slug === "demo";
+    let completion: Anthropic.Message | undefined;
+    let bookedViaCal = false;
+    try {
+      if (useCalcom) {
+        const toolMessages: Anthropic.MessageParam[] = [...claudeMessages];
+        for (let iter = 0; iter < 5; iter++) {
+          completion = await anthropic.messages.create({
+            model: MODEL,
+            max_tokens: MAX_TOKENS,
+            system,
+            messages: toolMessages,
+            tools: BOOKING_TOOLS,
+          });
+          const toolUses = completion.content.filter(
+            (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+          );
+          if (toolUses.length === 0) break;
+          toolMessages.push({ role: "assistant", content: completion.content });
+          const results: Anthropic.ToolResultBlockParam[] = [];
+          for (const tu of toolUses) {
+            const { result, booked } = await runBookingTool(
+              tu.name,
+              (tu.input ?? {}) as Record<string, unknown>
+            );
+            if (booked) bookedViaCal = true;
+            results.push({ type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(result) });
+          }
+          toolMessages.push({ role: "user", content: results });
+        }
+      }
+    } catch (e) {
+      console.error("cal.com tool loop failed, falling back to plain reply:", e);
+      completion = undefined;
+    }
+    if (!completion) {
+      completion = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        system,
+        messages: claudeMessages,
+      });
+    }
+
+    let reply = completion.content
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("")
       .trim();
+
+    if (bookedViaCal && !reply) {
+      reply = "you're all locked in, invite's on the way to your email";
+    }
 
     if (completion.stop_reason === "max_tokens") {
       console.warn("reply hit max_tokens, may be truncated:", { leadId });
     }
 
-    // The brief is NEVER produced in the conversation. Detect the silent booking
-    // signal (tolerant of near-miss tags), then strip it and neutralize dashes so
-    // nothing internal or bot-tell-y leaks to the prospect.
-    const booked = /<{1,}\s*BOOKED\s*>{0,}/i.test(reply);
+    // The brief is NEVER produced in the conversation. Detect a booking, via a real
+    // Cal.com booking or the silent tag, then strip/neutralize before the prospect
+    // sees anything.
+    const booked = bookedViaCal || /<{1,}\s*BOOKED\s*>{0,}/i.test(reply);
     const safeReply = sanitizeForProspect(reply) || "you're all set, talk soon";
 
     // 6. Save the assistant reply.
