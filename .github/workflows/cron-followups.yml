@@ -2,8 +2,8 @@ name: Trigger Follow-ups Cron
 
 on:
   schedule:
-    # Run every hour at :00
-    - cron: '0 * * * *'
+        # Run every 5 minutes (testing)
+    - cron: '*/5 * * * *'
     # Run daily keepalive at 12:00 UTC
     - cron: '0 12 * * *'
 
