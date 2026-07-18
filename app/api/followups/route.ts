@@ -29,6 +29,7 @@ const CLIENT_FIELDS =
 // (same brain/voice as a live reply), and escalates up to MAX_FOLLOWUPS then parks
 // the lead to nurture. Reset/opt-out is handled on the chat write path.
 export async function GET(req: Request) {
+  // For testing: allow manual triggering without auth. In production, set CRON_SECRET.
   // If CRON_SECRET is set, require it (Vercel cron sends it automatically).
   const secret = process.env.CRON_SECRET;
   if (secret) {
