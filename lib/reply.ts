@@ -15,16 +15,16 @@ export const OUTBOUND_CONTINUATION =
 // ---- Pipeline Revival Engine -------------------------------------------------
 // Proven 5-step re-engagement sequence. Each delay is measured from the moment the
 // setter last spoke with no reply from the prospect:
-//   #1  24h after the setter's last message
-//   #2  24h after #1
-//   #3  24h after #2
-//   #4  96h after #3
-//   #5  3 weeks after #4  (the revival attempt, the whole point of the system)
+//   #1  3s after the setter's last message (testing mode)
+//   #2  5s after #1
+//   #3  4s after #2
+//   #4  6s after #3
+//   #5  8s after #4
 // followupDelayMs(c) = time to the NEXT follow-up given c already sent, so the chat
-// route (c = 0) schedules #1 at +24h and the cron chains the rest.
+// route (c = 0) schedules #1 at +3s and the cron chains the rest.
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-export const FOLLOWUP_SCHEDULE_MS = [24 * HOUR, 24 * HOUR, 24 * HOUR, 96 * HOUR, 21 * DAY];
+export const FOLLOWUP_SCHEDULE_MS = [3000, 5000, 4000, 6000, 8000]; // 3-8s for testing
 export const MAX_FOLLOWUPS = FOLLOWUP_SCHEDULE_MS.length; // 5
 export function followupDelayMs(sentSoFar: number): number {
   return FOLLOWUP_SCHEDULE_MS[sentSoFar] ?? FOLLOWUP_SCHEDULE_MS[FOLLOWUP_SCHEDULE_MS.length - 1];
