@@ -108,7 +108,22 @@ export async function createBookingRaw(params: {
 // ---- Higher-level helpers used by the setter's booking tools -----------------
 
 export type OpenSlot = { start: string; label: string; meridiem: "AM" | "PM" };
-export type OpenDay = { date: string; weekday: string; slots: OpenSlot[] };
+export type OpenDay = { date: string; weekday: string; suggested: OpenSlot[]; slots: OpenSlot[] };
+
+// Pick up to 3 real slots spread across the day (favoring an AM + a couple PM) so the
+// setter has a small, exact set to offer, no need to improvise times.
+function pickSpread(slots: OpenSlot[]): OpenSlot[] {
+  if (slots.length <= 3) return slots;
+  const am = slots.filter((s) => s.meridiem === "AM");
+  const pm = slots.filter((s) => s.meridiem === "PM");
+  const picks: OpenSlot[] = [];
+  if (am.length) picks.push(am[0]);
+  if (pm.length) picks.push(pm[Math.floor(pm.length / 2)]);
+  if (pm.length > 1) picks.push(pm[pm.length - 1]);
+  const pool = slots.filter((s) => !picks.includes(s));
+  while (picks.length < 3 && pool.length) picks.push(pool.shift()!);
+  return picks.sort((a, b) => a.start.localeCompare(b.start)).slice(0, 3);
+}
 
 // The soonest `maxDays` days (from tomorrow) that actually have open slots, each
 // with human-readable, AM/PM-labeled times in the prospect's timezone. The setter
@@ -135,7 +150,12 @@ export async function getOpenDays(timeZone: string, maxDays = 2): Promise<OpenDa
       const hour = Number(hour24Fmt.format(d));
       return { start: s.start, label: timeFmt.format(d), meridiem: hour < 12 ? "AM" : "PM" };
     });
-    days.push({ date, weekday: weekdayFmt.format(new Date(arr[0].start)), slots });
+    days.push({
+      date,
+      weekday: weekdayFmt.format(new Date(arr[0].start)),
+      suggested: pickSpread(slots),
+      slots,
+    });
     if (days.length >= maxDays) break;
   }
   return days;

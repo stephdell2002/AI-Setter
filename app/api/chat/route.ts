@@ -26,7 +26,7 @@ const BOOKING_TOOLS: Anthropic.Tool[] = [
   {
     name: "get_open_times",
     description:
-      "Get the REAL open times for the discovery call from the calendar, in the prospect's timezone. Call this once you know their timezone, right before offering times. Returns the soonest days with open slots (each time labeled and marked AM or PM). Offer the prospect only 2 to 3 times TOTAL from the first day, mixed across AM and PM (never 2-3 AM plus 2-3 PM). If that day does not work, offer 2 to 3 from the next day. Never offer or confirm a time that is not in this list.",
+      "Get the REAL open times for the discovery call from the calendar, in the prospect's timezone. Call this once you know their timezone, right before offering times. Each returned day has a `suggested` set (2 to 3 real times already spread across AM and PM) and the full `slots` list. Offer the prospect the first day's `suggested` times, using their labels EXACTLY as given. Do NOT invent, round, shift, or add a time, offering a time that is not really open will fail to book. If that day does not work for them, offer the next day's suggested times.",
     input_schema: {
       type: "object",
       properties: {
