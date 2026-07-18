@@ -1,0 +1,25 @@
+name: Trigger Follow-ups Cron
+
+on:
+  schedule:
+    # Run every hour at :00
+    - cron: '0 * * * *'
+    # Run daily keepalive at 12:00 UTC
+    - cron: '0 12 * * *'
+
+jobs:
+  followups:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger /api/followups
+        run: |
+          curl -X GET "https://ai-setter-steel.vercel.app/api/followups" \
+            -H "User-Agent: GitHub-Actions"
+
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger /api/keepalive
+        run: |
+          curl -X GET "https://ai-setter-steel.vercel.app/api/keepalive" \
+            -H "User-Agent: GitHub-Actions"
