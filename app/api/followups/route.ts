@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 import { buildSystemPrompt } from "@/lib/brain";
 import {
   MODEL,
+  FOLLOWUP_MODEL,
   OUTBOUND_CONTINUATION,
   followupTrigger,
   followupScheduleMs,
@@ -122,8 +123,10 @@ export async function GET(req: Request) {
         msgs.push({ role: "user", content: followupTrigger(number, maxFollowups) });
       }
 
+      // A bump (setter spoke last) runs on the cheaper follow-up model; answering a
+      // never-replied prospect for real keeps the full-quality live model.
       const completion = await anthropic.messages.create({
-        model: MODEL,
+        model: setterSpokeLast ? FOLLOWUP_MODEL : MODEL,
         max_tokens: setterSpokeLast ? 300 : 500,
         system: buildSystemPrompt(client) + genderContext(lead.gender),
         messages: msgs,

@@ -3,6 +3,11 @@
 
 export const MODEL = "claude-sonnet-4-6";
 
+// Follow-up bumps are short, low-stakes nudges, so they run on a cheaper/faster
+// model than the live discovery replies. Swap back to MODEL if you want bumps to
+// match the live voice exactly.
+export const FOLLOWUP_MODEL = "claude-haiku-4-5-20251001";
+
 // Synthetic opening user turn for a cold-outbound kickoff (never stored).
 export const OUTBOUND_TRIGGER =
   "[You are starting a cold outbound conversation. This prospect has not messaged yet, you are reaching out first. Send only your opening message: short, warm, human, and curiosity sparking, ending with one easy question that invites a reply. Follow your tone rules. Do not pitch or mention booking yet.]";

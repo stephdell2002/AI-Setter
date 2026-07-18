@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 import { buildSystemPrompt, BRIEF_PROMPT } from "@/lib/brain";
 import {
   MODEL,
+  FOLLOWUP_MODEL,
   OUTBOUND_TRIGGER,
   OUTBOUND_CONTINUATION,
   followupScheduleMs,
@@ -202,7 +203,7 @@ export async function POST(req: Request) {
 
       const anthropicF = new Anthropic({ apiKey });
       const fCompletion = await anthropicF.messages.create({
-        model: MODEL,
+        model: FOLLOWUP_MODEL,
         max_tokens: 300,
         system: buildSystemPrompt(client) + genderContext(fLead.gender),
         messages: fMsgs,
