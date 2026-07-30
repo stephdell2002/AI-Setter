@@ -1,4 +1,4 @@
-// Manual trigger for the Revival Engine (testing): the exact same handler as
+// Manual trigger for the Nameless Revival System (testing): the exact same handler as
 // /api/followups, kept as a separate path so it's easy to curl by hand.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

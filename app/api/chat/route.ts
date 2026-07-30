@@ -112,7 +112,7 @@ export async function POST(req: Request) {
     // batch rapid-fire texts). generate: produce a reply from the stored history.
     const storeOnly = body?.store_only === true;
     const generate = body?.generate === true;
-    // followup: the chat's embedded Revival Engine asking "is a follow-up due?".
+    // followup: the chat's embedded Nameless Revival System asking "is a follow-up due?".
     // The server decides from the lead's state: sends the next bump, returns the
     // time remaining, or reports the sequence finished.
     const followup = body?.followup === true;
@@ -156,11 +156,11 @@ export async function POST(req: Request) {
       );
     }
 
-    // Every setter's own Revival Engine schedule (per-row override or the default).
+    // Every setter's own Nameless Revival System schedule (per-row override or the default).
     const schedule = followupScheduleMs(client.followup_delays_seconds);
     const maxFollowups = schedule.length;
 
-    // Chat-embedded Revival Engine: the open chat tab asks whether a follow-up is
+    // Chat-embedded Nameless Revival System: the open chat tab asks whether a follow-up is
     // due. The lead's row is the source of truth, so a cron run, another tab, or a
     // prospect reply can't cause a double-send (the update below is a compare-and-
     // swap on next_followup_at).

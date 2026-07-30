@@ -79,7 +79,7 @@ export default function Chat({
     return (min + Math.random() * (max - min)) * 1000;
   }
 
-  // ---- Embedded Revival Engine ------------------------------------------------
+  // ---- The Nameless Revival System (embedded) ----------------------------------
   // While this tab is open, the chat runs the setter's own follow-up schedule
   // itself: after every bot message the server says when the next bump is due and
   // we arm a timer for it. The server (lead row) stays the source of truth; the

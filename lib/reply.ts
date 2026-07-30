@@ -17,7 +17,7 @@ export const OUTBOUND_TRIGGER =
 export const OUTBOUND_CONTINUATION =
   "[Context: you opened this conversation cold; the prospect has since replied. Continue naturally per your normal flow, including qualifying and booking when appropriate.]";
 
-// ---- Pipeline Revival Engine -------------------------------------------------
+// ---- The Nameless Revival System ----------------------------------------------
 // Proven 5-step re-engagement sequence (the production default). Each delay is
 // measured from the moment the setter last spoke with no reply from the prospect:
 //   #1  24h after the setter's last message

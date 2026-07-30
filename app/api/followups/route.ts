@@ -86,7 +86,7 @@ export async function GET(req: Request) {
         .maybeSingle();
       if (!client) continue;
 
-      // This setter's own Revival Engine cadence (per-row override or the default).
+      // This setter's own Nameless Revival System cadence (per-row override or the default).
       const schedule = followupScheduleMs(client.followup_delays_seconds);
       const maxFollowups = schedule.length;
       const sent = lead.followup_count ?? 0;
